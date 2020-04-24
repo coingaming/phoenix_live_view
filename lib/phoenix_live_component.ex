@@ -452,7 +452,7 @@ defmodule Phoenix.LiveComponent do
 
   @callback handle_event(
               event :: binary,
-              unsigned_params :: Phoenix.LiveView.unsigned_params(),
+              unsigned_params :: binary | Socket.unsigned_params(),
               socket :: Socket.t()
             ) ::
               {:noreply, Socket.t()} | {:reply, map, Socket.t()}
