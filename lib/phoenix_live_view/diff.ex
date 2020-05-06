@@ -186,8 +186,8 @@ defmodule Phoenix.LiveView.Diff do
   @doc """
   Converts a component to a rendered struct.
   """
-  def component_to_rendered(socket, component, assigns) when is_map(assigns) do
-    socket = mount_component(socket, component, %{})
+  def component_to_rendered(socket, component, assigns, mount_assigns) when is_map(assigns) do
+    socket = mount_component(socket, component, mount_assigns)
     assigns = maybe_call_preload!(component, assigns)
 
     socket
@@ -230,7 +230,7 @@ defmodule Phoenix.LiveView.Diff do
          pending_components,
          components
        ) do
-    rendered = component_to_rendered(socket, component, assigns)
+    rendered = component_to_rendered(socket, component, assigns, %{})
     traverse(socket, rendered, fingerprints_tree, pending_components, components)
   end
 
@@ -258,6 +258,11 @@ defmodule Phoenix.LiveView.Diff do
       comprehension_to_iodata(socket, dynamics, pending_components, components)
 
     {%{@dynamics => dynamics}, fingerprint, pending_components, components}
+  end
+
+  defp traverse(_socket, %Comprehension{dynamics: []}, _, pending_components, components) do
+    # The comprehension has no elements and it was not rendered yet, so we skip it.
+    {"", nil, pending_components, components}
   end
 
   defp traverse(

@@ -89,7 +89,7 @@ defmodule Phoenix.LiveView.Utils do
   def post_mount_prune(%Socket{} = socket) do
     socket
     |> clear_changed()
-    |> drop_private([:connect_params, :assign_new])
+    |> drop_private([:connect_info, :connect_params, :assign_new])
   end
 
   @doc """
@@ -210,7 +210,7 @@ defmodule Phoenix.LiveView.Utils do
 
       :error ->
         raise ArgumentError,
-              "cannot invoke handle_params nor live_redirect/live_link to #{inspect(uri)} " <>
+              "cannot invoke handle_params nor live_redirect/live_patch to #{inspect(uri)} " <>
                 "because it isn't defined in #{inspect(router)}"
     end
   end

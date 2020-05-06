@@ -76,9 +76,9 @@ defmodule Phoenix.LiveView do
   is invoked and the HTML is sent as a regular HTML response to the
   client.
 
-  After rendering the static page, LiveView connects from the client to the server
-  where stateful views are spawned to push rendered updates to the
-  browser, and receive client events via phx bindings. Just like
+  After rendering the static page, LiveView connects from the client
+  to the server where stateful views are spawned to push rendered updates
+  to the browser, and receive client events via phx bindings. Just like
   the first rendering, `mount/3` is invoked  with params, session,
   and socket state, where mount assigns values for rendering. However
   in the connected client case, a LiveView process is spawned on
@@ -92,7 +92,9 @@ defmodule Phoenix.LiveView do
 
   First, a LiveView requires two callbacks: `mount/3` and `render/1`:
 
-      defmodule AppWeb.ThermostatLive do
+      defmodule MyAppWeb.ThermostatLive do
+        # If you generated an app with mix phx.new --live,
+        # the line below would be: use MyAppWeb, :live_view
         use Phoenix.LiveView
 
         def render(assigns) do
@@ -108,14 +110,14 @@ defmodule Phoenix.LiveView do
       end
 
   The `render/1` callback receives the `socket.assigns` and is responsible
-  for returning rendered content. You can use `Phoenix.LiveView.sigil_L/2`
+  for returning rendered content. You can use `Phoenix.LiveView.Helpers.sigil_L/2`
   to inline LiveView templates. If you want to use `Phoenix.HTML` helpers,
   remember to `use Phoenix.HTML` at the top of your `LiveView`.
 
   With a LiveView defined, you first define the `socket` path in your endpoint,
   and point it to `Phoenix.LiveView.Socket`:
 
-      defmodule AppWeb.Endpoint do
+      defmodule MyAppWeb.Endpoint do
         use Phoenix.Endpoint
 
         socket "/live", Phoenix.LiveView.Socket,
@@ -129,7 +131,7 @@ defmodule Phoenix.LiveView do
 
   And configure its signing salt in the endpoint:
 
-      config :my_app, AppWeb.Endpoint,
+      config :my_app, MyAppWeb.Endpoint,
         ...,
         live_view: [signing_salt: ...]
 
@@ -139,11 +141,11 @@ defmodule Phoenix.LiveView do
 
   You can serve the LiveView directly from your router (recommended):
 
-      defmodule AppWeb.Router do
+      defmodule MyAppWeb.Router do
         use Phoenix.Router
         import Phoenix.LiveView.Router
 
-        scope "/", AppWeb do
+        scope "/", MyAppWeb do
           live "/thermostat", ThermostatLive
         end
       end
@@ -151,16 +153,16 @@ defmodule Phoenix.LiveView do
   You can also `live_render` from any template:
 
       <h1>Temperature Control</h1>
-      <%= live_render(@conn, AppWeb.ThermostatLive) %>
+      <%= live_render(@conn, MyAppWeb.ThermostatLive) %>
 
   Or you can `live_render` your view from any controller:
 
-      defmodule AppWeb.ThermostatController do
+      defmodule MyAppWeb.ThermostatController do
         ...
         import Phoenix.LiveView.Controller
 
         def show(conn, %{"id" => id}) do
-          live_render(conn, AppWeb.ThermostatLive)
+          live_render(conn, MyAppWeb.ThermostatLive)
         end
       end
 
@@ -175,12 +177,12 @@ defmodule Phoenix.LiveView do
       live "/thermostat", ThermostatLive, session: %{"extra_token" => "foo"}
 
       # In a view
-      <%= live_render(@conn, AppWeb.ThermostatLive, session: %{"extra_token" => "foo"}) %>
+      <%= live_render(@conn, MyAppWeb.ThermostatLive, session: %{"extra_token" => "foo"}) %>
 
   Notice the `:session` uses string keys as a reminder that session data
   is serialized and sent to the client. So you should always keep the data
-  in the session to a minimum. I.e. instead of storing a User struct, you
-  should store the "user_id" and load the User when the LiveView mounts.
+  in the session to a minimum. For example, instead of storing a User struct,
+  you should store the "user_id" and load the User when the LiveView mounts.
 
   Once the LiveView is rendered, a regular HTML response is sent. Next, your
   client code connects to the server:
@@ -191,8 +193,6 @@ defmodule Phoenix.LiveView do
       let csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
       let liveSocket = new LiveSocket("/live", Socket, {params: {_csrf_token: csrfToken}})
       liveSocket.connect()
-
-  *Note*: Comprehensive JavaScript client usage is covered in a later section.
 
   After the client connects, `mount/3` will be invoked inside a spawned
   LiveView process. At this point, you can use `connected?/1` to
@@ -205,7 +205,7 @@ defmodule Phoenix.LiveView do
         ...
 
         def mount(_params, %{"current_user_id" => user_id}, socket) do
-          if connected?(socket), do: :timer.send_interval(30000, self(), :update)
+          if connected?(socket), do: Process.send_after(self(), :update, 30000)
 
           case Thermostat.get_user_reading(user_id) do
             {:ok, temperature} ->
@@ -217,23 +217,24 @@ defmodule Phoenix.LiveView do
         end
 
         def handle_info(:update, socket) do
+          Process.send_after(self(), :update, 30000)
           {:ok, temperature} = Thermostat.get_reading(socket.assigns.user_id)
           {:noreply, assign(socket, :temperature, temperature)}
         end
       end
 
   We used `connected?(socket)` on mount to send our view a message every 30s if
-  the socket is in a connected state. We receive `:update` in a
-  `handle_info` just like a GenServer, and update our socket assigns. Whenever
-  a socket's assigns change, `render/1` is automatically invoked, and the
-  updates are sent to the client.
+  the socket is in a connected state. We receive the `:update` message in the
+  `handle_info/2` callback, just like in an Elixir's `GenServer`, and update our
+  socket assigns. Whenever a socket's assigns change, `render/1` is automatically
+  invoked, and the updates are sent to the client.
 
   ## Collocating templates
 
   In the examples above, we have placed the template directly inside the
   LiveView:
 
-      defmodule AppWeb.ThermostatLive do
+      defmodule MyAppWeb.ThermostatLive do
         use Phoenix.LiveView
 
         def render(assigns) do
@@ -251,11 +252,11 @@ defmodule Phoenix.LiveView do
   Alternatively, you can keep the `render/1` callback but delegate to an
   existing `Phoenix.View` module in your application. For example:
 
-      defmodule AppWeb.ThermostatLive do
+      defmodule MyAppWeb.ThermostatLive do
         use Phoenix.LiveView
 
         def render(assigns) do
-          Phoenix.View.render(AppWeb.PageView, "page.html", assigns)
+          Phoenix.View.render(MyAppWeb.PageView, "page.html", assigns)
         end
       end
 
@@ -266,8 +267,7 @@ defmodule Phoenix.LiveView do
   All of the data in a LiveView is stored in the socket as assigns.
   The `assign/2` and `assign/3` functions help store those values.
   Those values can be accessed in the LiveView as `socket.assigns.name`
-  but they are most commonly accessed inside LiveView templates as
-  `@name`.
+  but they are accessed inside LiveView templates as `@name`.
 
   `Phoenix.LiveView`'s built-in templates are identified by the `.leex`
   extension (Live EEx) or `~L` sigil. They are similar to regular `.eex`
@@ -299,8 +299,7 @@ defmodule Phoenix.LiveView do
   at all.
 
   The change tracking also works when rendering other templates as
-  long as they are also `.leex` templates and as long as all assigns
-  are passed to the child/inner template:
+  long as they are also `.leex` templates:
 
       <%= render "child_template.html", assigns %>
 
@@ -322,11 +321,16 @@ defmodule Phoenix.LiveView do
   regardless if you are using LiveView or not. The difference is that LiveView
   enforces this best practice.
 
-  Finally, note that change tracking works inside do/blocks, as long as those
-  blocks are given to Elixir's basic constructs, such as `if`, `case`, `for`,
-  and friends. If the do-block is given to a library function or user function,
-  such as `content_tag`, change tracking won't work. For example, imagine the
-  following template that renders a `div`:
+  ### LiveEEx pitfalls
+
+  There are two common pitfalls to keep in mind when using the `~L` sigil
+  or `.leex` templates.
+
+  When it comes to `do/end` blocks, change tracking is supported only on blocks
+  given to Elixir's basic constructs, such as `if`, `case`, `for`, and friends.
+  If the do/end block is given to a library function or user function, such as
+  `content_tag`, change tracking won't work. For example, imagine the following
+  template that renders a `div`:
 
       <%= content_tag :div, id: "user_#{@id}" do %>
         <%= @name %>
@@ -341,6 +345,69 @@ defmodule Phoenix.LiveView do
         <%= @name %>
         <%= @description %>
       </div>
+
+  Another pitfall of `.leex` templates is related to variables. Due to the scope
+  of variables, LiveView has to disable change tracking whenever variables are
+  used in the template, with the exception of variables introduced by Elixir
+  basic `case`, `for`, and other block constructs. Therefore, you **must avoid**
+  code like this in your LiveEEx:
+
+      <% some_var = @x + @y %>
+      <%= some_var %>
+
+  Instead, use a function:
+
+      <%= sum(@x, @y) %>
+
+  Or explicitly precompute the assign in your LiveView:
+
+      assign(socket, sum: socket.assigns.x + socket.assigns.y)
+
+  Similarly, **do not** define variables at the top of your `render` function:
+
+      def render(assigns) do
+        sum = assigns.x + assigns.y
+
+        ~L"""
+        <%= sum %>
+        """
+      end
+
+  If you access your assigns outside of the template, then LiveView can no
+  longer do change tracking. However this restriction only applies to LiveView's
+  render. If you have a helper function that emits `~L`, then using variables
+  is fine:
+
+      def title(title, small) do
+        ~L"""
+        <h3><%= title %><small><%= small %></small></h3>
+        """
+      end
+
+  Similarly, variables introduced by Elixir's block constructs are fine. For example,
+  the `post` variable defined by the comprehension below is fine:
+
+      <%= for post <- @posts do %>
+        ...
+      <% end %>
+
+  As are the variables matched defined in a `case` or `cond`:
+
+      <%= cond do %>
+        <% is_nil(@post) -> %>
+          ...
+        <% @post -> %>
+          ...
+      <% end %>
+
+  To sum up:
+
+    1. Avoid passing block expressions to library and custom functions
+
+    2. Never do anything on `def render(assigns)` besides rendering a template
+      or invoking the `~L` sigil
+
+    3. Avoid defining local variables, except within `for`, `case`, and friends
 
   ## Bindings
 
@@ -366,7 +433,7 @@ defmodule Phoenix.LiveView do
   | [Key Events](#module-key-events) | `phx-window-keydown`, `phx-window-keyup` |
   | [Rate Limiting](#module-rate-limiting-events-with-debounce-and-throttle) | `phx-debounce`, `phx-throttle` |
   | [DOM Patching](#module-dom-patching-and-temporary-assigns) | `phx-update` |
-  | [JS Interop](#module-js-interop-and-client--controlled-dom) | `phx-hook` |
+  | [JS Interop](#module-js-interop-and-client-controlled-dom) | `phx-hook` |
 
   ### Click Events
 
@@ -444,8 +511,9 @@ defmodule Phoenix.LiveView do
         <%= submit "Save" %>
       </form>
 
-  *Reminder*: `form_for/3` is a `Phoenix.HTML` helper. Don't forget to include 
+  *Reminder*: `form_for/3` is a `Phoenix.HTML` helper. Don't forget to include
   `use Phoenix.HTML` at the top of your LiveView, if using `Phoenix.HTML` helpers.
+  Also, if using `error_tag/2`, don't forget to `import MyAppWeb.ErrorHelpers`.
 
   Next, your LiveView picks up the events in `handle_event` callbacks:
 
@@ -470,7 +538,7 @@ defmodule Phoenix.LiveView do
             {:noreply,
              socket
              |> put_flash(:info, "user created")
-             |> redirect(to: Routes.user_path(AppWeb.Endpoint, AppWeb.User.ShowView, user))}
+             |> redirect(to: Routes.user_path(MyAppWeb.Endpoint, MyAppWeb.User.ShowView, user))}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, assign(socket, changeset: changeset)}
@@ -494,7 +562,7 @@ defmodule Phoenix.LiveView do
   messages for form fields that the user has not changed yet (e.g. required
   fields further down on the page.)
 
-  For example, your `AppWeb.ErrorHelpers` may use this function:
+  For example, your `MyAppWeb.ErrorHelpers` may use this function:
 
       def error_tag(form, field) do
         form.errors
@@ -516,7 +584,7 @@ defmodule Phoenix.LiveView do
         display: none;
       }
 
-  #### Submitting the form action over HTTP
+  ### Submitting the form action over HTTP
 
   The `phx-trigger-action` attribute can be added to a form to trigger a standard
   form submit on DOM patch to the URL specified in the form's standard `action`
@@ -561,7 +629,6 @@ defmodule Phoenix.LiveView do
   the following is supported by 90% of the global mobile market with Firefox yet to implement.
 
       <input type="text" inputmode="numeric" pattern="[0-9]*">
-
 
   ### Password inputs
 
@@ -617,6 +684,54 @@ defmodule Phoenix.LiveView do
         {:noreply, socket}
       end
 
+  ### Rate limiting events with Debounce and Throttle
+
+  All events can be rate-limited on the client by using the
+  `phx-debounce` and `phx-throttle` bindings, with the following behavior:
+
+    * `phx-debounce` - Accepts either a string integer timeout value, or `"blur"`.
+      When an int is provided, delays emitting the event by provided milliseconds.
+      When `"blur"` is provided, delays emitting an input's change event until the
+      field is blurred by the user. Debounce is typically emitted for inputs.
+
+    * `phx-throttle` - Accepts an integer timeout value to throttle the event in milliseconds.
+      Unlike debounce, throttle will immediately emit the event, then rate limit the
+      event at one event per provided timeout. Throttle is typically used to rate limit
+      clicks, mouse and keyboard actions.
+
+  For example, to avoid validating an email until the field is blurred, while validating
+  the username at most every 2 seconds after a user changes the field:
+
+      <form phx-change="validate" phx-submit="save">
+        <input type="text" name="user[email]" phx-debounce="blur"/>
+        <input type="text" name="user[username]" phx-debounce="2000"/>
+      </form>
+
+  And to rate limit a volume up click to once every second:
+
+      <button phx-click="volume_up" phx-throttle="1000">+</button>
+
+  Likewise, you may throttle held-down keydown:
+
+      <div phx-window-keydown="keydown" phx-throttle="500">
+        ...
+      </div>
+
+  Unless held-down keys are required, a better approach is generally to use
+  `phx-keyup` bindings which only trigger on key up, thereby being self-limiting.
+  However, `phx-keydown` is useful for games and other usecases where a constant
+  press on a key is desired. In such cases, throttle should always be used.
+
+  #### Debounce and Throttle special behavior
+
+  The following specialized behavior is performed for forms and keydown bindings:
+
+    * When a `phx-submit`, or a `phx-change` for a different input is triggered,
+      any current debounce or throttle timers are reset for existing inputs.
+
+    * A `phx-keydown` binding is only throttled for key repeats. Unique keypresses
+      back-to-back will dispatch the pressed key events.
+
   ### LiveView Specific Events
 
   The `lv:` event prefix supports LiveView specific features that are handled
@@ -632,27 +747,159 @@ defmodule Phoenix.LiveView do
         <%= live_flash(@flash, :info) %>
       </p>
 
+  ## Security considerations of the LiveView model
+
+  As we have seen, LiveView begins its life-cycle as a regular HTTP request.
+  Then a stateful connection is established. Both the HTTP request and
+  the stateful connection receives the client data via parameters and session.
+  This means that any session validation must happen both in the HTTP request
+  and the stateful connection.
+
+  ### Mounting considerations
+
+  For example, if your HTTP request perform user authentication and confirmation
+  on every request via Plugs, such as this:
+
+      plug :ensure_user_authenticated
+      plug :ensure_user_confirmed
+
+  Then the `c:mount/3` callback of your LiveView should execute those same
+  verifications:
+
+      def mount(params, %{"user_id" => user_id} = session, socket) do
+        socket = assign(socket, current_user: Accounts.get_user!(user_id))
+
+        socket =
+          if socket.assigns.current_user.confirmed_at do
+            socket
+          else
+            redirect(socket, to: "/login")
+          end
+
+        {:ok, socket}
+      end
+
+  Given almost all `c:mount/3` actions in your application will have to
+  perform these exact steps, we recommend creating a function called
+  `assign_defaults/2` or similar and put it in a module, such as
+  `MyAppWeb.LiveHelpers`, which you will use and import of every LiveView:
+
+      import MyAppWeb.LiveHelpers
+
+      def mount(params, session, socket) do
+        {:ok, assign_default(session, socket)}
+      end
+
+  where:
+
+      defmodule MyAppWeb.LiveHelpers do
+        import Phoenix.LiveView
+
+        def assign_defaults(session, socket) do
+          socket = assign(socket, current_user: Accounts.get_user!(user_id))
+
+          if socket.assigns.current_user.confirmed_at do
+            socket
+          else
+            redirect(socket, to: "/login")
+          end
+        end
+      end
+
+  One possible concern in this approach is that in regular HTTP requests the
+  current user will be fetched twice: one in the HTTP request and another on
+  `mount`. You can address this by using the `assign_new` function, that will
+  reuse any of the connection assigns from the HTTP request:
+
+      def assign_defaults(session, socket) do
+        socket = assign_new(socket, :current_user, fn -> Accounts.get_user!(user_id) end)
+
+        if socket.assigns.current_user.confirmed_at do
+          socket
+        else
+          redirect(socket, to: "/login")
+        end
+      end
+
+  ### Events considerations
+
+  It is also important to keep in mind that LiveView are stateful. Therefore,
+  if you load any data on `c:mount/3` and the data itself changes, the data
+  won't be automatically propagated to the LiveView, unless you broadcast
+  those events with `Phoenix.PubSub`.
+
+  Generally speaking, the simplest and safest approach is to perform authorization
+  whenever there is an action. For example, imagine that you have a LiveView
+  for a "Blog", and only editors can edit posts. Therefore, it is best to validate
+  the user is an editor on mount and on every event:
+
+      def mount(%{"post_id" => post_id}, session, socket) do
+        socket = assign_defaults(session, socket)
+        post = Blog.get_post_for_user!(socket.assigns.current_user, post_id)
+        {:ok, assign(socket, post: post)}
+      end
+
+      def handle_event("update_post", params, socket) do
+        updated_post = Blog.update_post(socket.assigns.current_user, socket.assigns.post, params)
+        {:noreply, assign(socket, post: updated_post)}
+      end
+
+  In the example above, the Blog context receives the user on both `get` and
+  `update` operations, and always validates according that the user has access,
+  raising an error otherwise.
+
+  ### Disconnecting all instances of a given live user
+
+  Another security consideration is how to disconnect all instances of a given
+  live user. For example, imagine the user logs outs, its account is terminated,
+  or any other reason.
+
+  Luckily, it is possible to identify all LiveView sockets by setting a "live_socket_id"
+  in the session. For example, when signing in a user, you could do:
+
+      conn
+      |> put_session(:current_user_id, user.id)
+      |> put_session(:live_socket_id, "users_socket:#{user.id}")
+
+  Now all LiveView sockets will be identified and listening to the given
+  `live_socket_id`. You can disconnect all live users identified by said
+  ID by broadcasting on the topic:
+
+      MyAppWeb.Endpoint.broadcast("users_socket:#{user.id}", "disconnect", %{})
+
+  Once a LiveView is disconnected, the client will attempt to restablish
+  the connection, re-executing the `c:mount/3` callback. In this case,
+  if the user is no longer logged in or it no longer has access to its
+  current resource, `c:mount/3` will fail and the user will be redirected
+  to the proper page.
+
+  This is the same mechanism provided by `Phoenix.Channel`s. Therefore, if
+  your application uses both channels and LiveViews, you can use the same
+  technique to disconnect any stateful connection.
+
   ## Compartmentalizing markup and events with `render`, `live_render`, and `live_component`
 
   We can render another template directly from a LiveView template by simply
   calling `render`:
 
-      render SomeOtherView, "child_template", assigns
+      render SomeView, "child_template.html", assigns
 
-  If the other template has the `.leex` extension, LiveView change tracking
-  will also work across templates.
+  Where `SomeView` is a regular `Phoenix.View`, typically defined in
+  `lib/my_app_web/views/some_view.ex` and "child_template.html" is defined
+  at `lib/my_app_web/templates/some_view/child_template.html.leex`. As long
+  as the template has the `.leex` extension and all assigns are passed,
+  LiveView change tracking will also work across templates.
 
-  When rendering a child template, any of the events bound in the child
-  template will be sent to the parent LiveView. In other words, similar to
-  regular Phoenix templates, a regular `render` call does not start another
-  LiveView. This means `render` is useful to sharing markup between views.
+  When rendering a child template, any of the `phx-*` events in the child
+  template will be sent to the LiveView. In other words, similar to regular
+  Phoenix templates, a regular `render` call does not start another LiveView.
+  This means `render` is useful for sharing markup between views.
 
-  One option to address this problem is to render a child LiveView inside a
-  parent LiveView by calling `live_render/3` instead of `render/3` from the
-  LiveView template. This child LiveView runs in a completely separate process
-  than the parent, with its own `mount` and `handle_event` callbacks. If a
-  child LiveView crashes, it won't affect the parent. If the parent crashes,
-  all children are terminated.
+  If you want to start a separate LiveView from within a LiveView, then you
+  can call `live_render/3` instead of `render/3`. This child LiveView runs
+  in a separate process than the parent, with its own `mount` and `handle_event`
+  callbacks. If a child LiveView crashes, it won't affect the parent. If the
+  parent crashes, all children are terminated.
 
   When rendering a child LiveView, the `:id` option is required to uniquely
   identify the child. A child LiveView will only ever be rendered and mounted
@@ -665,69 +912,23 @@ defmodule Phoenix.LiveView do
   completely isolated UI elements, but it is a slightly expensive abstraction if
   all you want is to compartmentalize markup and events. For example, if you are
   showing a table with all users in the system, and you want to compartmentalize
-  this logic, using a separate `LiveView`, each with its own process, would likely
-  be too expensive. For these cases, LiveView provides `Phoenix.LiveComponent`,
-  which are rendered using `live_component/3`:
+  this logic, rendering a separate `LiveView` for each user, then using a process
+  per user would likely be too expensive. For these cases, LiveView provides
+  `Phoenix.LiveComponent`, which are rendered using `live_component/3`:
 
       <%= live_component(@socket, UserComponent, id: user.id, user: user) %>
 
   Components have their own `mount` and `handle_event` callbacks, as well as their
   own state with change tracking support. Components are also lightweight as they
   "run" in the same process as the parent `LiveView`. However, this means an error
-  in a component would cause the whole view to fail to render. See
-  `Phoenix.LiveComponent` for a complete rundown on components.
+  in a component would cause the whole view to fail to render. See `Phoenix.LiveComponent`
+  for a complete rundown on components.
 
   To sum it up:
 
     * `render` - compartmentalizes markup
     * `live_component` - compartmentalizes state, markup, and events
     * `live_render` - compartmentalizes state, markup, events, and error isolation
-
-  ## Rate limiting events with Debounce and Throttle
-
-  All events can be rate-limited on the client by using the
-  `phx-debounce` and `phx-throttle` bindings, with the following behavior:
-
-    * `phx-debounce` - Accepts either a string integer timeout value, or `"blur"`.
-      When an int is provided, delays emitting the event by provided milliseconds.
-      When `"blur"` is provided, delays emitting an input's change event until the
-      field is blurred by the user.
-    * `phx-throttle` - Accepts an integer timeout value to throttle the event in milliseconds.
-      Unlike debounce, throttle will immediately emit the event, then rate limit the
-      event at one event per provided timeout.
-
-  For example, to avoid validating an email until the field is blurred, while validating
-  the username at most every 2 seconds after a user changes the field:
-
-      <form phx-change="validate" phx-submit="save">
-        <input type="text" name="user[email]" phx-debounce="blur"/>
-        <input type="text" name="user[username]" phx-debounce="2000"/>
-      </form>
-
-  And to rate limit a button click to once every second:
-
-      <button phx-click="search" phx-throttle="1000">Search</button>
-
-  Likewise, you may throttle held-down keydown:
-
-      <div phx-window-keydown="keydown" phx-throttle="500">
-        ...
-      </div>
-
-  Unless held-down keys are required, a better approach is generally to use
-  `phx-keyup` bindings which only trigger on key up, thereby being self-limiting.
-  However, `phx-keydown` is useful for games and other usecases where a constant
-  press on a key is desired. In such cases, throttle should always be used.
-
-  ### Debounce and Throttle special behavior
-
-  The following specialized behavior is performed for forms and keydown bindings:
-
-    * When a `phx-submit`, or a `phx-change` for a different
-      input is triggered, any current debounce or throttle timers are reset for
-      existing inputs.
-    * A `phx-keydown` binding is only throttled for key repeats. Unique keypresses
-      back-to-back will dispatch the pressed key events.
 
   ## DOM patching and temporary assigns
 
@@ -818,12 +1019,12 @@ defmodule Phoenix.LiveView do
 
   You can trigger live navigation in two ways:
 
-    * From the client - this is done by replacing `Phoenix.HTML.link/2`
+    * From the client - this is done by replacing `Phoenix.HTML.Link.link/2`
       by `Phoenix.LiveView.Helpers.live_patch/2` or
       `Phoenix.LiveView.Helpers.live_redirect/2`
 
-    * From the server - this is done by replacing `redirect/2` calls
-      by `push_patch/2` or `push_redirect/2`.
+    * From the server - this is done by replacing `Phoenix.Controller.redirect/2` calls
+      by `Phoenix.LiveView.push_patch/2` or `Phoenix.LiveView.push_redirect/2`.
 
   For example, in a template you may write:
 
@@ -831,30 +1032,46 @@ defmodule Phoenix.LiveView do
 
   or in a LiveView:
 
-      {:noreply, push_redirect(socket, to: Routes.live_path(socket, MyLive, page + 1))}
+      {:noreply, push_patch(socket, to: Routes.live_path(socket, MyLive, page + 1))}
 
   The "patch" operations must be used when you want to navigate to the
   current LiveView, simply updating the URL and the current parameters,
   without mounting a new LiveView. When patch is used, the `c:handle_params/3`
-  callback is invoked. See the next section for more information.
+  callback is invoked and the minimal set of changes are sent to the client.
+  See the next section for more information.
 
   The "redirect" operations must be used when you want to dismount the
-  current LiveView and mount a new one. In those cases, the existing root
-  LiveView is shutdown, and an Ajax request is made to request the necessary
-  information about the new LiveView without performing a full static render
-  (which reduces latency and improves performance). Once information is
-  retrieved, the new LiveView is mounted. While redirecting, a `phx-disconnected`
-  class is added to the root LiveView, which can be used to indicate to the
-  user a new page is being loaded.
+  current LiveView and mount a new one. In those cases, an Ajax request
+  is made to fetch the necessary information about the new LiveView,
+  which is mounted in place of the current one within the current layout.
+  While redirecting, a `phx-disconnected` class is added to the LiveView,
+  which can be used to indicate to the user a new page is being loaded.
 
-  `live_patch/2`, `live_redirect/2`, `push_redirect/2`, and `push_patch/2`
-  only work for LiveViews defined at the router with the `live/3` macro.
-  Once live navigation is triggered, the flash is automatically cleared.
+  At the end of the day, regardless if you invoke `link/2`, `live_patch/2`,
+  and `live_redirect/2` from the client, or `redirect/2`, `push_patch/2`,
+  and `push_redirect/2` from the server, the user will end-up on the same
+  page. The difference between those is mostly the amount of data sent over
+  the wire:
+
+    * `link/2` and `redirect/2` do full page reloads
+
+    * `live_redirect/2` and `push_redirect/2` mounts a new LiveView while
+      keeping the current layout
+
+    * `live_patch/2` and `push_patch/2` updates the current LiveView and
+      sends only the minimal diff
+
+  An easy rule of thumb is to stick with `live_redirect/2` and `push_redirect/2`
+  and use the patch helpers only in the cases where you want to minimize the
+  amount of data sent when navigating within the same LiveView (for example,
+  if you want to change the sorting of a table while also updating the URL).
 
   ### `handle_params/3`
 
-  The `c:handle_params/3` callback is invoked after `c:mount/3`. It receives the
-  request parameters as first argument, the url as second, and the socket as third.
+  The `c:handle_params/3` callback is invoked after `c:mount/3` and before
+  the initial render. It is also invoked every time `live_patch/2` or
+  `push_patch/2` are used. It receives the request parameters as first
+  argument, the url as second, and the socket as third.
 
   For example, imagine you have a `UserTable` LiveView to show all users in
   the system and you define it in the router as:
@@ -888,26 +1105,33 @@ defmodule Phoenix.LiveView do
   is invoked once per LiveView life-cycle. Only the params you expect to be changed
   via `live_patch/2` or `push_patch/2` must be loaded on `c:handle_params/3`.
 
+  For example, imagine you have a blog. The URL for a single post is:
+  "/blog/posts/:post_id". In the post page, you have comments and they are paginated.
+  You use `live_patch/2` to update the shown posts every time the user paginates,
+  updating the URL to "/blog/posts/:post_id?page=X". In this example, you will access
+  `"post_id"`  on `c:mount/3` and the page on `c:handle_params/3`.
+
   Furthermore, it is very important to not access the same parameters on both
   `c:mount/3` and `c:handle_params/3`. For example, do NOT do this:
 
-      def mount(%{"organization_id" => org_id}, session, socket) do
-        # do something with org_id
+      def mount(%{"post_id" => post_id}, session, socket) do
+        # do something with post_id
       end
 
-      def handle_params(%{"organization_id" => org_id, "sort_by" => sort_by}, url, socket) do
-        # do something with org_id and sort_by
+      def handle_params(%{"post_id" => post_id, "page" => page}, url, socket) do
+        # do something with post_id and page
       end
 
   If you do that, because `c:mount/3` is called once and `c:handle_params/3` multiple
-  times, your state can get out of sync. So once a parameter is read on mount, it
-  should not be read elsewhere. Instead, do this:
+  times, the "post_id" read on mount can get out of sync if the one in `c:handle_params/3`.
+  So once a parameter is read on mount, it should not be read elsewhere. Instead, do this:
 
-      def mount(%{"organization_id" => org_id}, session, socket) do
-        # do something with org_id
+      def mount(%{"post_id" => post_id}, session, socket) do
+        # do something with post_id
       end
 
       def handle_params(%{"sort_by" => sort_by}, url, socket) do
+        post_id = socket.assigns.post.id
         # do something with sort_by
       end
 
@@ -917,13 +1141,25 @@ defmodule Phoenix.LiveView do
   want certain events to change the URL but without polluting the browser's history.
   This can be done by passing the `replace: true` option to any of the navigation helpers.
 
+  ### Multiple LiveViews in the same page
+
+  LiveView allows you to have multiple LiveViews in the same page by calling
+  `Phoenix.LiveView.Helpers.live_render/3` in your templates. However, only
+  the LiveViews defined directly in your router and use the "Live Navigation"
+  functionality described here. This is important because LiveViews work
+  closely with your router, guaranteeing you can only navigate to known
+  routes.
+
   ## Live Layouts
 
   When working with LiveViews, there are usually three layouts to be
   considered:
 
     * the root layout - this is a layout used by both LiveView and
-      regular views
+      regular views. This layout typically contains the <html>
+      definition alongside the head and body tags. Any content define
+      in the root layout will remain the same, even as you live navigate
+      across LiveViews
 
     * the app layout - this is the default application layout which
       is not included or used by LiveViews;
@@ -945,19 +1181,15 @@ defmodule Phoenix.LiveView do
 
       plug :put_root_layout, {MyAppWeb.LayoutView, :root}
 
-  Alternatively, the layout can be passed to the `live` macro
-  in the router:
+  Alternatively, the root layout can be passed to the `live`
+  macro to your **live routes**:
 
       live "/dashboard", MyApp.Dashboard, layout: {MyAppWeb.LayoutView, :root}
 
-  If you want the "root" layout to only apply to LiveViews, you
-  can pass it as a option or define it in a specific pipeline that
-  is only used by LiveView routes.
-
   The "app" and "live" layouts are often small and similar to each
-  other, but the "app" layout uses the `@conn` and used as part of
-  the regular request life-cycle, and the "live" layout is part of
-  the LiveView and therefore has direct access to the `@socket`.
+  other, but the "app" layout uses the `@conn` and is used as part
+  of the regular request life-cycle, and the "live" layout is part
+  of the LiveView and therefore has direct access to the `@socket`.
 
   For example, you can define a new `live.html.leex` layout with
   dynamic content. You must use `@inner_content` where the output
@@ -970,7 +1202,10 @@ defmodule Phoenix.LiveView do
   To use the live layout, update your LiveView to pass the `:layout`
   option to `use Phoenix.LiveView`:
 
-      use Phoenix.LiveView, layout: {AppWeb.LayoutView, "live.html"}
+      use Phoenix.LiveView, layout: {MyAppWeb.LayoutView, "live.html"}
+
+  If you are using Phoenix v1.5, the layout is automatically set
+  when generating apps with the `mix phx.new --live` flag.
 
   The `:layout` option does not apply for LiveViews rendered within
   other LiveViews. If you are rendering child live views or if you
@@ -979,27 +1214,28 @@ defmodule Phoenix.LiveView do
 
         def mount(_params, _session, socket) do
           socket = assign(socket, new_message_count: 0)
-          {:ok, socket, layout: {AppWeb.LayoutView, "live.html"}}
+          {:ok, socket, layout: {MyAppWeb.LayoutView, "live.html"}}
         end
 
   *Note*: The layout will be wrapped by the LiveView's `:container` tag.
 
   ### Updating the HTML document title
 
-  Because the main layout from the Plug pipeline is rendered outside of LiveView,
-  the contents cannot be dynamically changed. The one exception is the `<title>`
-  of the HTML document. Phoenix LiveView special cases the `@page_title` assign
-  to allow dynamically updating the title of the page, which is useful when
-  using live navigation, or annotating the browser tab with a notification.
-  For example, to update the user's notification count in the browser's title bar,
-  first set the `page_title` assign on mount:
+  Because the root layout from the Plug pipeline is rendered outside of
+  LiveView, the contents cannot be dynamically changed. The one exception
+  is the `<title>` of the HTML document. Phoenix LiveView special cases
+  the `@page_title` assign to allow dynamically updating the title of the
+  page, which is useful when using live navigation, or annotating the browser
+  tab with a notification. For example, to update the user's notification
+  count in the browser's title bar, first set the `page_title` assign on
+  mount:
 
         def mount(_params, _session, socket) do
           socket = assign(socket, page_title: "Latest Posts")
           {:ok, socket}
         end
 
-  Then access `@page_title` in the app layout:
+  Then access `@page_title` in the root layout:
 
       <title><%= @page_title %></title>
 
@@ -1009,7 +1245,7 @@ defmodule Phoenix.LiveView do
 
       <%= live_title_tag @page_title, prefix: "MyApp – " %>
 
-  Now, although the app layout is not updated by LiveView, by simply assigning
+  Although the root layout is not updated by LiveView, by simply assigning
   to `page_title`, LiveView knows you want the title to be updated:
 
       def handle_info({:new_messages, count}, socket) do
@@ -1022,23 +1258,28 @@ defmodule Phoenix.LiveView do
   instead*. Assigning the `@page_title` updates the `document.title` directly,
   and therefore cannot be used to update any other part of the base layout.
 
-  ## Disconnecting all instances of a given live user
+  ## Using Gettext for internationalization
 
-  It is possible to identify all LiveView sockets by setting a "live_socket_id"
-  in the session. For example, when signing in a user, you could do:
+  For interationalization with [gettext](https://hexdocs.pm/gettext/Gettext.html),
+  the locale used within your Plug pipeline can be stored in the Plug session and
+  restored within your LiveView mount. For example, after user signin or preference
+  changes, you can write the locale to the session:
 
-      conn
-      |> put_session(:current_user_id, user.id)
-      |> put_session(:live_socket_id, "users_sockets:#{user.id}")
+      def put_user_session(conn, current_user) do
+        locale = get_locale_for_user(current_user)
+        Gettext.put_locale(MyApp.Gettext, locale)
 
-  Now all LiveView sockets will be identified and listening to the given
-  `live_socket_id`. You can disconnect all live users identified by said
-  ID by broadcasting on the topic:
+        conn
+        |> put_session(:user_id, current_user.id)
+        |> put_session(:locale, locale)
+      end
 
-      MyApp.Endpoint.broadcast("users_socket:#{user.id}", "disconnect", %{})
+  Then in your LiveView `mount/3`, you can restore the locale:
 
-  It is the same mechanism provided by `Phoenix.Socket`, so you can use the
-  same approach to disconnect live users and regular channels.
+      def mount(_params, %{"locale" => locale}, socket) do
+        Gettext.put_locale(MyApp.Gettext, locale)
+        {:ok socket}
+      end
 
   ## JavaScript Client Specific
 
@@ -1104,18 +1345,19 @@ defmodule Phoenix.LiveView do
 
   ### Forms and input handling
 
-  The JavaScript client is always the source of truth for current
-  input values. For any given input with focus, LiveView will never
-  overwrite the input's current value, even if it deviates from
-  the server's rendered updates. This works well for updates where
-  major side effects are not expected, such as form validation errors,
-  or additive UX around the user's input values as they fill out a form.
-  For these use cases, the `phx-change` input does not concern itself
-  with disabling input editing while an event to the server is in flight.
-  When a `phx-change` event is sent to the server the input tag and parent
-  form tag receive the `phx-change-loading` css class, then the payload is
-  pushed to the server with a `"_target"` param in the root payload
-  containing the keyspace of the input name which triggered the change event.
+  The JavaScript client is always the source of truth for current input values.
+  For any given input with focus, LiveView will never overwrite the input's current
+  value, even if it deviates from the server's rendered updates. This works well
+  for updates where major side effects are not expected, such as form validation
+  errors, or additive UX around the user's input values as they fill out a form.
+
+  For these use cases, the `phx-change` input does not concern itself with disabling
+  input editing while an event to the server is in flight. When a `phx-change` event
+  is sent to the server the input tag and parent form tag receive the `phx-change-loading`
+  css class, then the payload is pushed to the server with a `"_target"` param in the
+  root payload containing the keyspace of the input name which triggered the change
+  event.
+
   For example, if the following input triggered a change event:
 
       <input name="user[username]"/>
@@ -1591,8 +1833,13 @@ defmodule Phoenix.LiveView do
   @doc """
   Adds a flash message to the socket to be displayed on redirect.
 
-  *Note*: the `Phoenix.Router.fetch_live_flash` plug must be plugged in
-  your browser's pipeline in place of `fetch_flash` to be supported,
+  *Note*: While you can use `put_flash/3` inside a `Phoenix.LiveComponent`,
+  components have their own `@flash` assigns. The `@flash` assign
+  in a component is only copied to its parent LiveView if the component
+  calls `push_redirect/2` or `push_patch/2`.
+
+  *Note*: You must also place the `Phoenix.LiveView.Router.fetch_live_flash/2`
+  plug in your browser's pipeline in place of `fetch_flash` to be supported,
   for example:
 
       import Phoenix.LiveView.Router
@@ -1763,24 +2010,137 @@ defmodule Phoenix.LiveView do
       end
   """
   def get_connect_params(%Socket{private: private} = socket) do
-    cond do
-      connect_params = private[:connect_params] ->
-        if connected?(socket), do: connect_params, else: nil
+    if connect_params = private[:connect_params] do
+      if connected?(socket), do: connect_params, else: nil
+    else
+      raise_connect_only!(socket, "connect_params")
+    end
+  end
 
-      child?(socket) ->
-        raise RuntimeError, """
-        attempted to read connect_params from a nested child LiveView #{inspect(socket.view)}.
+  @doc """
+  Accesses the connect info from the socket to use on connected mount.
 
-        Only the root LiveView has access to connect params.
-        """
+  Connect info are only sent when the client connects to the server and
+  only remain available during mount. `nil` is returned when called in a
+  disconnected state and a `RuntimeError` is raised if called after mount.
 
-      true ->
-        raise RuntimeError, """
-        attempted to read connect_params outside of #{inspect(socket.view)}.mount/3.
+  ## Examples
 
-        connect_params only exist while mounting. If you require access to this information
-        after mount, store the state in socket assigns.
-        """
+  First, when invoking the LiveView socket, you need to declare the
+  `connect_info` you want to receive. Typically, it includes at least
+  the session but it may include other keys, such as `:peer_data`.
+  See `Phoenix.Endpoint.socket/3`:
+
+      socket "/live", Phoenix.LiveView.Socket,
+        websocket: [connect_info: [:peer_data, session: @session_options]]
+
+  Those values can now be accessed on the connected mount as
+  `get_connect_info/1`:
+
+      def mount(_params, _session, socket) do
+        if info = get_connect_info(socket) do
+          {:ok, assign(socket, ip: info.peer_data.address)}
+        else
+          {:ok, assign(socket, ip: nil)}
+        end
+      end
+  """
+  def get_connect_info(%Socket{private: private} = socket) do
+    if connect_info = private[:connect_info] do
+      if connected?(socket), do: connect_info, else: nil
+    else
+      raise_connect_only!(socket, "connect_info")
+    end
+  end
+
+  @doc """
+  Returns true if the socket is connected and the tracked static assets have changed.
+
+  This function is useful to detect if the client is running on an outdated
+  version of the marked static files. It works by comparing the static paths
+  sent by the client with the one on the server.
+
+  **Note:** this functionality requires Phoenix v1.5.2 or later.
+
+  To use this functionality, the first step is to annotate which static files
+  you want to be tracked by LiveView, with the `phx-track-static`. For example:
+
+      <link phx-track-static rel="stylesheet" href="<%= Routes.static_path(@conn, "/css/app.css") %>"/>
+      <script defer phx-track-static type="text/javascript" src="<%= Routes.static_path(@conn, "/js/app.js") %>"></script>
+
+  Now, whenever LiveView connects to the server, it will send a copy `src`
+  or `href` attributes of all tracked statics and compare those values with
+  the latest entries computed by `mix phx.digest` in the server.
+
+  The tracked statics on the client will match the ones on the server the
+  huge majority of times. However, if there is a new deployment, those values
+  may differ. You can use this function to detect those cases and show a
+  banner to the user, asking them to reload the page. To do so, first set the
+  assign on mount:
+
+      def mount(params, session, socket) do
+        {:ok, assign(socket, static_changed?: static_changed?(socket))}
+      end
+
+  And then in your views:
+
+      <%= if @static_change do %>
+        <div id="reload-static">
+          The app has been updated. Click here to <a href="#" onclick="window.location.reload()">reload</a>.
+        </div>
+      <% end %>
+
+  If you prefer, you can also send a JavaScript script that immediately
+  reloads the page.
+
+  **Note:** only set `phx-track-static` on your own assets. For example, do
+  not set it external JavaScript files:
+
+      <script defer phx-track-static type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+
+  Because you don't actually serve the file above, LiveView will interpret
+  the static above as missing, and this function will return true.
+  """
+  def static_changed?(%Socket{private: private, endpoint: endpoint} = socket) do
+    if connect_params = private[:connect_params] do
+      connected?(socket) and
+        static_changed?(
+          connect_params["_cache_static_manifest_latest"],
+          endpoint.config(:cache_static_manifest_latest)
+        )
+    else
+      raise_connect_only!(socket, "static_changed?")
+    end
+  end
+
+  defp static_changed?([_ | _] = statics, %{} = latest) do
+    latest = Map.to_list(latest)
+
+    not Enum.all?(statics, fn static ->
+      [static | _] = :binary.split(static, "?")
+
+      Enum.any?(latest, fn {non_digested, digested} ->
+        String.ends_with?(static, non_digested) or String.ends_with?(static, digested)
+      end)
+    end)
+  end
+
+  defp static_changed?(_, _), do: false
+
+  defp raise_connect_only!(socket, fun) do
+    if child?(socket) do
+      raise RuntimeError, """
+      attempted to read #{fun} from a nested child LiveView #{inspect(socket.view)}.
+
+      Only the root LiveView has access to #{fun}.
+      """
+    else
+      raise RuntimeError, """
+      attempted to read #{fun} outside of #{inspect(socket.view)}.mount/3.
+
+      #{fun} only exists while mounting. If you require access to this information
+      after mount, store the state in socket assigns.
+      """
     end
   end
 

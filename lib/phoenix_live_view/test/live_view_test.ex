@@ -60,7 +60,7 @@ defmodule Phoenix.LiveViewTest do
     * `render_focus/2` - sends a phx-focus event and value and
       returns the rendered result of the `handle_event/3` callback.
 
-    * `render_blur/1` - sends a phx-focus event and value and
+    * `render_blur/1` - sends a phx-blur event and value and
       returns the rendered result of the `handle_event/3` callback.
 
     * `render_submit/1` - sends a form phx-submit event and value and
@@ -101,32 +101,6 @@ defmodule Phoenix.LiveViewTest do
       send(view.pid, {:set_temp: 50})
       assert render(view) =~ "The temperature is: 50℉"
 
-  ## Testing shutdowns and stopping views
-
-  Like all processes, views can shutdown normally or abnormally, and this
-  can be tested with `assert_remove/3`. For example:
-
-      send(view.pid, :boom)
-      reason = assert_remove view
-      assert {:shutdown, %RuntimeError{}} = reason
-
-      stop(view)
-      reason = assert_remove view
-      assert {:shutdown, :stop} = reason
-
-  Nested views can be removed by a parent at any time based on conditional
-  rendering. In these cases, the removal of the view is detected by the
-  browser, or our test client, and the child is shutdown gracefully. This
-  can be tested in the same way as above:
-
-      assert render(parent) =~ "some content in child"
-
-      assert child = find_live_child(parent, "child-dom-id")
-      send(parent.pid, :msg_that_removes_child)
-
-      assert_remove child
-      refute render(parent) =~ "some content in child"
-
   ## Testing components
 
   There are two main mechanisms for testing components. To test stateless
@@ -159,17 +133,31 @@ defmodule Phoenix.LiveViewTest do
   alias Phoenix.LiveViewTest.{ClientProxy, DOM, Element, View}
 
   @doc """
+  Puts connect params to be used on LiveView connections.
+
+  See `Phoenix.LiveView.get_connect_params/1`.
+  """
+  def put_connect_params(conn, params) when is_map(params) do
+    Plug.Conn.put_private(conn, :live_view_connect_params, params)
+  end
+
+  @doc """
+  Puts connect info to be used on LiveView connections.
+
+  See `Phoenix.LiveView.get_connect_info/1`.
+  """
+  def put_connect_info(conn, params) when is_map(params) do
+    Plug.Conn.put_private(conn, :live_view_connect_info, params)
+  end
+
+  @doc """
   Spawns a connected LiveView process.
 
-  Accepts either a previously rendered `%Plug.Conn{}` or
-  an unsent `%Plug.Conn{}`. The latter case is a convenience
-  to perform the `get/2` and connected mount in a single
-  step.
-
-  ## Options
-
-    * `:connect_params` - the map of params available in the socket-connected
-      mount. See `Phoenix.LiveView.get_connect_params/1` for more information.
+  If a `path` is given, then a regular `get(conn, path)`
+  is done and the page is upgraded to a `LiveView`. If
+  no path is given, it assumes a previously rendered
+  `%Plug.Conn{}` is given, which will be converted to
+  a `LiveView` immediately.
 
   ## Examples
 
@@ -180,22 +168,18 @@ defmodule Phoenix.LiveViewTest do
       assert {:error, {:redirect, %{to: "/somewhere"}}} = live(conn, "/path")
 
   """
-  defmacro live(conn, path_or_opts \\ []) do
+  defmacro live(conn, path \\ nil) do
     quote bind_quoted: binding(), generated: true do
-      case path_or_opts do
-        opts when is_list(opts) ->
-          Phoenix.LiveViewTest.__live__(conn, opts)
+      cond do
+        is_binary(path) ->
+          Phoenix.LiveViewTest.__live__(get(conn, path), path)
 
-        path when is_binary(path) ->
-          Phoenix.LiveViewTest.__live__(get(conn, path), path, [])
+        is_nil(path) ->
+          Phoenix.LiveViewTest.__live__(conn)
+
+        true ->
+          raise RuntimeError, "path must be nil or a binary, got: #{inspect(path)}"
       end
-    end
-  end
-
-  @doc "See `live/2`."
-  defmacro live(conn, path, opts) do
-    quote bind_quoted: binding() do
-      Phoenix.LiveViewTest.__live__(get(conn, path), path, opts)
     end
   end
 
@@ -230,22 +214,20 @@ defmodule Phoenix.LiveViewTest do
 
   @doc false
   def __isolated__(conn, endpoint, live_view, opts) do
-    {mount_opts, lv_opts} = Keyword.split(opts, [:connect_params])
-
     put_in(conn.private[:phoenix_endpoint], endpoint || raise("no @endpoint set in test case"))
     |> Plug.Test.init_test_session(%{})
     |> Phoenix.LiveView.Router.fetch_live_flash([])
-    |> Phoenix.LiveView.Controller.live_render(live_view, lv_opts)
-    |> connect_from_static_token(nil, mount_opts)
+    |> Phoenix.LiveView.Controller.live_render(live_view, opts)
+    |> connect_from_static_token(nil)
   end
 
   @doc false
-  def __live__(%Plug.Conn{state: state, status: status} = conn, opts) do
+  def __live__(%Plug.Conn{state: state, status: status} = conn) do
     path = rebuild_path(conn)
 
     case {state, status} do
       {:sent, 200} ->
-        connect_from_static_token(conn, path, opts)
+        connect_from_static_token(conn, path)
 
       {:sent, 302} ->
         error_redirect_conn(conn)
@@ -274,16 +256,17 @@ defmodule Phoenix.LiveViewTest do
     end
   end
 
-  def __live__(conn, path, opts) do
-    connect_from_static_token(conn, path, opts)
+  @doc false
+  def __live__(conn, path) do
+    connect_from_static_token(conn, path)
   end
 
-  defp connect_from_static_token(%Plug.Conn{status: redir} = conn, _path, _opts)
+  defp connect_from_static_token(%Plug.Conn{status: redir} = conn, _path)
        when redir in [301, 302] do
     error_redirect_conn(conn)
   end
 
-  defp connect_from_static_token(%Plug.Conn{status: 200} = conn, path, opts) do
+  defp connect_from_static_token(%Plug.Conn{status: 200} = conn, path) do
     DOM.ensure_loaded!()
 
     html =
@@ -294,7 +277,7 @@ defmodule Phoenix.LiveViewTest do
 
     case DOM.find_live_views(html) do
       [{id, session_token, static_token} | _] ->
-        do_connect(conn, path, html, session_token, static_token, id, opts)
+        do_connect(conn, path, html, session_token, static_token, id)
 
       [] ->
         {:error, :nosession}
@@ -318,16 +301,16 @@ defmodule Phoenix.LiveViewTest do
   defp error_redirect_key(%{private: %{phoenix_live_redirect: true}}), do: :live_redirect
   defp error_redirect_key(_), do: :redirect
 
-  defp do_connect(%Plug.Conn{} = conn, path, html, session_token, static_token, id, opts) do
+  defp do_connect(%Plug.Conn{} = conn, path, html, session_token, static_token, id) do
     child_statics = Map.delete(DOM.find_static_views(html), id)
-    timeout = opts[:timeout] || 5000
     endpoint = Phoenix.Controller.endpoint_module(conn)
 
     %ClientProxy{ref: ref} =
       proxy =
       ClientProxy.build(
         id: id,
-        connect_params: opts[:connect_params] || %{},
+        connect_params: conn.private[:live_view_connect_params] || %{},
+        connect_info: conn.private[:live_view_connect_info] || %{},
         session_token: session_token,
         static_token: static_token,
         module: conn.assigns.live_module,
@@ -339,8 +322,7 @@ defmodule Phoenix.LiveViewTest do
       caller: {self(), ref},
       html: html,
       proxy: proxy,
-      timeout: timeout,
-      session: Plug.Conn.get_session(conn),
+      session: maybe_get_session(conn),
       url: mount_url(endpoint, path)
     ]
 
@@ -360,6 +342,14 @@ defmodule Phoenix.LiveViewTest do
     end
   end
 
+  defp maybe_get_session(%Plug.Conn{} = conn) do
+    try do
+      Plug.Conn.get_session(conn)
+    rescue
+      _ -> %{}
+    end
+  end
+
   defp mount_url(_endpoint, nil), do: nil
   defp mount_url(endpoint, "/"), do: endpoint.url()
   defp mount_url(endpoint, path), do: Path.join(endpoint.url(), path)
@@ -372,6 +362,9 @@ defmodule Phoenix.LiveViewTest do
 
   @doc """
   Mounts, updates and renders a component.
+
+  If the component uses the `@myself` assigns, then an `id` must
+  be given to it is marked as stateful.
 
   ## Examples
 
@@ -397,7 +390,9 @@ defmodule Phoenix.LiveViewTest do
   @doc false
   def __render_component__(endpoint, component, assigns) do
     socket = %Socket{endpoint: endpoint}
-    rendered = Diff.component_to_rendered(socket, component, Map.new(assigns))
+    assigns = Map.new(assigns)
+    mount_assigns = if assigns[:id], do: %{myself: -1}, else: %{}
+    rendered = Diff.component_to_rendered(socket, component, assigns, mount_assigns)
     {_, diff, _} = Diff.render(socket, rendered, Diff.new_components())
     diff |> Diff.to_iodata() |> IO.iodata_to_binary()
   end
@@ -503,8 +498,10 @@ defmodule Phoenix.LiveViewTest do
   element on the page with a `phx-change` attribute in it. The event name
   given set on `phx-change` is then sent to the appropriate LiveView
   (or component if `phx-target` is set accordingly). All `phx-value-*`
-  entries in the element are sent as values. Extra values can be given
-  with the `value` argument.
+  entries in the element are sent as values.
+
+  If you need to pass any extra values or metadata, such as the "_target"
+  parameter, you can do so by giving a map under the `value` argument.
 
   It returns the contents of the whole LiveView or an `{:error, redirect}`
   tuple.
@@ -516,6 +513,13 @@ defmodule Phoenix.LiveViewTest do
       assert view
              |> element("form")
              |> render_change(%{deg: 123}) =~ "123 exceeds limits"
+
+      # Passing metadata
+      {:ok, view, html} = live(conn, "/thermo")
+
+      assert view
+             |> element("form")
+             |> render_change(%{_target: ["deg"], deg: 123}) =~ "123 exceeds limits"
   """
   def render_change(element, value \\ %{})
   def render_change(%Element{} = element, value), do: render_event(element, :change, value)

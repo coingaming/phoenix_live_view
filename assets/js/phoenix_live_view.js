@@ -9,8 +9,6 @@ See the hexdocs at `https://hexdocs.pm/phoenix_live_view` for documentation.
 
 import morphdom from "morphdom"
 
-const CLIENT_OUTDATED = "outdated"
-const JOIN_CRASHED = "join crashed"
 const CONSECUTIVE_RELOADS = "consecutive-reloads"
 const MAX_RELOADS = 10
 const RELOAD_JITTER = [1000, 3000]
@@ -278,7 +276,7 @@ export class Rendered {
  *
  * @param {Object} [opts] - Optional configuration. Outside of keys listed below, all
  * configuration is passed directly to the Phoenix Socket constructor.
- * @param {Function} [opts.defaults] - The optional defaults to use for various bindings,
+ * @param {Object} [opts.defaults] - The optional defaults to use for various bindings,
  * such as `phx-debounce`. Supports the following keys:
  *
  *   - debounce - the millisecond phx-debounce time. Defaults 300
@@ -291,7 +289,7 @@ export class Rendered {
  *
  * @param {string} [opts.bindingPrefix] - The optional prefix to use for all phx DOM annotations.
  * Defaults to "phx-".
- * @param {string} [opts.hooks] - The optional object for referencing LiveView hook callbacks.
+ * @param {Object} [opts.hooks] - The optional object for referencing LiveView hook callbacks.
  * @param {integer} [opts.loaderTimeout] - The optional delay in milliseconds to wait before apply
  * loading states.
  * @param {Function} [opts.viewLogger] - The optional function to log debug information. For example:
@@ -1038,6 +1036,9 @@ export let DOM = {
             el.form.removeEventListener("submit", clearTimer)
           }
           el.removeEventListener("blur", this.private(el, DEBOUNCE_BLUR_TIMER))
+          if (!throttle) {
+            el.removeEventListener("keydown", clearTimer)
+          }
           this.deletePrivate(el, DEBOUNCE_BLUR_TIMER)
           this.deletePrivate(el, DEBOUNCE_TIMER)
           if(!throttle){ callback() }
@@ -1048,6 +1049,9 @@ export let DOM = {
         }
         this.putPrivate(el, DEBOUNCE_TIMER, setTimeout(debounceCallback, timeout))
         el.addEventListener("blur", blurCallback)
+        if (!throttle) {
+          el.addEventListener("keydown", clearTimer)
+        }
         this.putPrivate(el, DEBOUNCE_BLUR_TIMER, blurCallback)
         if(el.form){
           el.form.addEventListener(PHX_CHANGE_EVENT, clearTimer)
@@ -1255,7 +1259,7 @@ class DOMPatch {
         onNodeDiscarded: (el) => { this.trackAfter("discarded", el) },
         onBeforeNodeDiscarded: (el) => {
           if(el.getAttribute && el.getAttribute(PHX_REMOVE) !== null){ return true }
-          if(DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"])){ return false }
+          if(el.parentNode !== null && DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"])){ return false }
           if(this.skipCIDSibling(el)){ return false }
           this.trackBefore("discarded", el)
           // nested view handling
@@ -1411,7 +1415,6 @@ export class View {
     this.flash = flash
     this.parent = parentView
     this.root = parentView ? parentView.root : this
-    this.gracefullyClosed = false
     this.el = el
     this.id = this.el.id
     this.view = this.el.getAttribute(PHX_VIEW)
@@ -1466,16 +1469,12 @@ export class View {
       callback()
       for(let id in this.viewHooks){ this.destroyHook(this.viewHooks[id]) }
     }
-    if(this.hasGracefullyClosed()){
-      this.log("destroyed", () => ["the server view has gracefully closed"])
-      onFinished()
-    } else {
-      this.log("destroyed", () => ["the child has been removed from the parent"])
-      this.channel.leave()
-        .receive("ok", onFinished)
-        .receive("error", onFinished)
-        .receive("timeout", onFinished)
-    }
+
+    this.log("destroyed", () => ["the child has been removed from the parent"])
+    this.channel.leave()
+      .receive("ok", onFinished)
+      .receive("error", onFinished)
+      .receive("timeout", onFinished)
   }
 
   setContainerClasses(...classes){
@@ -1795,18 +1794,13 @@ export class View {
     this.onChannel("live_redirect", (redir) => this.onLiveRedirect(redir))
     this.onChannel("session", ({token}) => this.el.setAttribute(PHX_SESSION, token))
     this.channel.onError(reason => this.onError(reason))
-    this.channel.onClose(() => this.onGracefulClose())
+    this.channel.onClose(() => this.onError({reason: "closed"}))
   }
 
   destroyAllChildren(){
     for(let id in this.root.children[this.id]){
       this.getChildById(id).destroy()
     }
-  }
-
-  onGracefulClose(){
-    this.gracefullyClosed = true
-    this.destroyAllChildren()
   }
 
   onLiveRedirect(redir){
@@ -1829,8 +1823,6 @@ export class View {
 
   isDestroyed(){ return this.destroyed }
 
-  hasGracefullyClosed(){ return this.gracefullyClosed }
-
   join(callback){
     if(!this.parent){
       this.stopCallback = this.liveSocket.withPageLoading({to: this.href, kind: "initial"})
@@ -1845,14 +1837,11 @@ export class View {
   }
 
   onJoinError(resp){
-    if(resp.reason === CLIENT_OUTDATED){ return this.liveSocket.reloadWithJitter(this) }
-    if(resp.reason === JOIN_CRASHED){ return this.liveSocket.reloadWithJitter(this) }
     if(resp.redirect || resp.live_redirect){ this.channel.leave() }
     if(resp.redirect){ return this.onRedirect(resp.redirect) }
     if(resp.live_redirect){ return this.onLiveRedirect(resp.live_redirect) }
-    this.parent && this.parent.ackJoin(this)
-    this.displayError()
     this.log("error", () => ["unable to join", resp])
+    return this.liveSocket.reloadWithJitter(this)
   }
 
   onError(reason){

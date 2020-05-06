@@ -40,6 +40,7 @@ defmodule Phoenix.LiveViewTest.Router do
     live "/router/foobarbaz/nested/index", FooBarLive.Nested.Index, :index
     live "/router/foobarbaz/nested/show", FooBarLive.Nested.Index, :show
     live "/router/foobarbaz/custom", FooBarLive, :index, as: :custom_foo_bar
+    live "/router/foobarbaz/with_live", Phoenix.LiveViewTest.Live.Nested.Module, :action
 
     live "/thermo", ThermostatLive
     live "/thermo/:id", ThermostatLive
@@ -79,7 +80,7 @@ defmodule Phoenix.LiveViewTest.Router do
   end
 
   scope "/", as: :user_defined_metadata, alias: Phoenix.LiveViewTest do
-    pipe_through :setup_session
+    live "/sessionless-thermo", ThermostatLive
     live "/thermo-with-metadata", ThermostatLive, metadata: %{route_name: "opts"}
   end
 end

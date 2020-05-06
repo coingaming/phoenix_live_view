@@ -13,7 +13,7 @@ defmodule Phoenix.LiveViewUnitTest do
               view: Phoenix.LiveViewTest.ParamCounterLive,
               root_view: Phoenix.LiveViewTest.ParamCounterLive
             },
-            %{connect_params: %{}},
+            %{connect_params: %{}, connect_info: %{}},
             nil,
             %{}
           )
@@ -58,6 +58,117 @@ defmodule Phoenix.LiveViewUnitTest do
     test "returns params connected and mounting" do
       socket = %{@socket | connected?: true}
       assert get_connect_params(socket) == %{}
+    end
+  end
+
+  describe "get_connect_info" do
+    test "raises when not in mounting state and connected" do
+      socket = Utils.post_mount_prune(%{@socket | connected?: true})
+
+      assert_raise RuntimeError, ~r/attempted to read connect_info/, fn ->
+        get_connect_info(socket)
+      end
+    end
+
+    test "raises when not in mounting state and disconnected" do
+      socket = Utils.post_mount_prune(%{@socket | connected?: false})
+
+      assert_raise RuntimeError, ~r/attempted to read connect_info/, fn ->
+        get_connect_info(socket)
+      end
+    end
+
+    test "returns nil when disconnected" do
+      socket = %{@socket | connected?: false}
+      assert get_connect_info(socket) == nil
+    end
+
+    test "returns params connected and mounting" do
+      socket = %{@socket | connected?: true}
+      assert get_connect_info(socket) == %{}
+    end
+  end
+
+  describe "static_changed?" do
+    test "raises when not in mounting state and connected" do
+      socket = Utils.post_mount_prune(%{@socket | connected?: true})
+
+      assert_raise RuntimeError, ~r/attempted to read static_changed?/, fn ->
+        static_changed?(socket)
+      end
+    end
+
+    test "raises when not in mounting state and disconnected" do
+      socket = Utils.post_mount_prune(%{@socket | connected?: false})
+
+      assert_raise RuntimeError, ~r/attempted to read static_changed?/, fn ->
+        static_changed?(socket)
+      end
+    end
+
+    test "returns false when disconnected" do
+      socket = %{@socket | connected?: false}
+      assert static_changed?(socket) == false
+    end
+
+    test "returns true when connected and static do not match" do
+      refute static_changed?([], %{})
+      refute static_changed?(["foo/bar.css"], nil)
+
+      assert static_changed?(["foo/bar.css"], %{})
+      refute static_changed?(["foo/bar.css"], %{"foo/bar.css" => "foo/bar-123456.css"})
+
+      refute static_changed?(
+               ["domain.com/foo/bar.css"],
+               %{"foo/bar.css" => "foo/bar-123456.css"}
+             )
+
+      refute static_changed?(
+               ["//domain.com/foo/bar.css"],
+               %{"foo/bar.css" => "foo/bar-123456.css"}
+             )
+
+      refute static_changed?(
+               ["//domain.com/foo/bar.css?vsn=d"],
+               %{"foo/bar.css" => "foo/bar-123456.css"}
+             )
+
+      refute static_changed?(
+               ["//domain.com/foo/bar-123456.css"],
+               %{"foo/bar.css" => "foo/bar-123456.css"}
+             )
+
+      refute static_changed?(
+               ["//domain.com/foo/bar-123456.css?vsn=d"],
+               %{"foo/bar.css" => "foo/bar-123456.css"}
+             )
+
+      assert static_changed?(
+               ["//domain.com/foo/bar-654321.css"],
+               %{"foo/bar.css" => "foo/bar-123456.css"}
+             )
+
+      assert static_changed?(
+               ["foo/bar.css", "baz/bat.js"],
+               %{"foo/bar.css" => "foo/bar-123456.css"}
+             )
+
+      assert static_changed?(
+               ["foo/bar.css", "baz/bat.js"],
+               %{"foo/bar.css" => "foo/bar-123456.css", "p/baz/bat.js" => "p/baz/bat-123456.js"}
+             )
+
+      refute static_changed?(
+               ["foo/bar.css", "baz/bat.js"],
+               %{"foo/bar.css" => "foo/bar-123456.css", "baz/bat.js" => "baz/bat-123456.js"}
+             )
+    end
+
+    defp static_changed?(client, latest) do
+      socket = %{@socket | connected?: true}
+      Process.put(:cache_static_manifest_latest, latest)
+      socket = put_in(socket.private.connect_params["_cache_static_manifest_latest"], client)
+      static_changed?(socket)
     end
   end
 

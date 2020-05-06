@@ -11,6 +11,8 @@ defmodule Phoenix.LiveComponent do
   The simplest component only needs to define a `render` function:
 
       defmodule HeroComponent do
+        # If you generated an app with mix phx.new --live,
+        # the line below would be: use MyAppWeb, :live_component
         use Phoenix.LiveComponent
 
         def render(assigns) do
@@ -309,6 +311,14 @@ defmodule Phoenix.LiveComponent do
       end
 
   Where the `:entry` assign was injected into the `do/end` block.
+
+  Note the `@inner_content` assign is also passed to `c:update/2`
+  along all other assigns. So if you have a custom `update/2`
+  implementation, make sure to assign it to the socket like so:
+
+      def update(%{inner_content: inner_content}, socket) do
+        {:ok, assign(socket, inner_content: inner_content)}
+      end
 
   The approach above is the preferred one when passing blocks to `do/end`.
   However, if you are outside of a .leex template and you want to invoke a
