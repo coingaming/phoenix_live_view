@@ -20,6 +20,7 @@ const PHX_EVENT_CLASSES = [
 ]
 const PHX_COMPONENT = "data-phx-component"
 const PHX_LIVE_LINK = "data-phx-link"
+const PHX_TRACK_STATIC = "track-static"
 const PHX_LINK_STATE = "data-phx-link-state"
 const PHX_REF = "data-phx-ref"
 const PHX_SKIP = "data-phx-skip"
@@ -48,7 +49,6 @@ const PHX_DISABLE_WITH_RESTORE = "data-phx-disable-with-restore"
 const PHX_HOOK = "hook"
 const PHX_DEBOUNCE = "debounce"
 const PHX_THROTTLE = "throttle"
-const PHX_CHANGE_EVENT = "phx-change"
 const PHX_UPDATE = "update"
 const PHX_KEY = "key"
 const PHX_PRIVATE = "phxPrivate"
@@ -61,9 +61,9 @@ const BEFORE_UNLOAD_LOADER_TIMEOUT = 200
 const BINDING_PREFIX = "phx-"
 const PUSH_TIMEOUT = 30000
 const LINK_HEADER = "x-requested-with"
-const DEBOUNCE_BLUR = "debounce-blur"
-const DEBOUNCE_TIMER = "debounce-timer"
-const DEBOUNCE_BLUR_TIMER = "debounce-blur-timer"
+const RESPONSE_URL_HEADER = "x-response-url"
+const DEBOUNCE_TRIGGER = "debounce-trigger"
+const THROTTLED = "throttled"
 const DEBOUNCE_PREV_KEY = "debounce-prev-key"
 const DEFAULTS = {
   debounce: 300,
@@ -74,6 +74,9 @@ const DEFAULTS = {
 const DYNAMICS = "d"
 const STATIC = "s"
 const COMPONENTS = "c"
+const EVENTS = "e"
+const REPLY = "r"
+const TITLE = "t"
 
 
 let logError = (msg, obj) => console.error && console.error(msg, obj)
@@ -132,9 +135,18 @@ let serializeForm = (form, meta = {}) => {
 }
 
 export class Rendered {
+  static extract(diff){
+    let {[REPLY]: reply, [EVENTS]: events, [TITLE]: title} = diff
+    delete diff[REPLY]
+    delete diff[EVENTS]
+    delete diff[TITLE]
+    return {diff, title, reply: reply || null, events: events || []}
+  }
+
   constructor(viewId, rendered){
     this.viewId = viewId
-    this.replaceRendered(rendered)
+    this.rendered = {}
+    this.mergeDiff(rendered)
   }
 
   parentViewId(){ return this.viewId }
@@ -143,7 +155,7 @@ export class Rendered {
     return this.recursiveToString(this.rendered, this.rendered[COMPONENTS], onlyCids)
   }
 
-  recursiveToString(rendered, components = rendered[COMPONENTS] || {}, onlyCids){
+  recursiveToString(rendered, components = rendered[COMPONENTS], onlyCids){
     onlyCids = onlyCids ? new Set(onlyCids) : null
     let output = {buffer: "", components: components, onlyCids: onlyCids}
     this.toOutputBuffer(rendered, output)
@@ -154,24 +166,68 @@ export class Rendered {
 
   isComponentOnlyDiff(diff){
     if(!diff[COMPONENTS]){ return false }
-    return Object.keys(diff).filter(k => k !== "title" && k !== COMPONENTS).length === 0
+    return Object.keys(diff).length === 1
   }
 
+  getComponent(diff, cid){ return diff[COMPONENTS][cid] }
+
   mergeDiff(diff){
-    if(!diff[COMPONENTS] && this.isNewFingerprint(diff)){
-      this.replaceRendered(diff)
-    } else {
-      this.recursiveMerge(this.rendered, diff)
+    let newc = diff[COMPONENTS]
+    delete diff[COMPONENTS]
+    this.rendered = this.recursiveMerge(this.rendered, diff)
+    this.rendered[COMPONENTS] = this.rendered[COMPONENTS] || {}
+
+    if(newc){
+      let oldc = this.rendered[COMPONENTS]
+
+      for(let cid in newc){
+        let cdiff = newc[cid]
+        let component = cdiff
+        let stat = component[STATIC]
+        if(typeof(stat) === "number"){
+          while(typeof(stat) === "number"){
+            component = stat > 0 ? newc[stat] : oldc[-stat]
+            stat = component[STATIC]
+          }
+          // We need to clone because multiple components may point
+          // to the same shared component, and since recursive merge
+          // is destructive, we need to keep the original intact.
+          //
+          // Then we do a direct recursive merge because we always
+          // want to merge the first level, even if cdiff[STATIC]
+          // is not undefined. We put the proper static in place after
+          // merge.
+          //
+          // The test suite covers those corner cases.
+          component = clone(component)
+          this.doRecursiveMerge(component, cdiff)
+          component[STATIC] = stat
+        } else {
+          component = oldc[cid] || {}
+          component = this.recursiveMerge(component, cdiff)
+        }
+        newc[cid] = component
+      }
+      for (var key in newc) { oldc[key] = newc[key] }
+      diff[COMPONENTS] = newc
     }
   }
 
   recursiveMerge(target, source){
+    if(source[STATIC] !== undefined){
+      return source
+    } else {
+      this.doRecursiveMerge(target, source)
+      return target
+    }
+  }
+
+  doRecursiveMerge(target, source){
     for(let key in source){
       let val = source[key]
       let targetVal = target[key]
-      if(isObject(val) && isObject(targetVal)){
-        if(targetVal[DYNAMICS] && !val[DYNAMICS]){ delete targetVal[DYNAMICS] }
-        this.recursiveMerge(targetVal, val)
+      if(isObject(val) && val[STATIC] === undefined && isObject(targetVal)){
+        this.doRecursiveMerge(targetVal, val)
       } else {
         target[key] = val
       }
@@ -187,11 +243,6 @@ export class Rendered {
   // private
 
   get(){ return this.rendered }
-
-  replaceRendered(rendered){
-    this.rendered = rendered
-    this.rendered[COMPONENTS] = this.rendered[COMPONENTS] || {}
-  }
 
   isNewFingerprint(diff = {}){ return !!diff[STATIC] }
 
@@ -235,31 +286,52 @@ export class Rendered {
     template.innerHTML = this.recursiveToString(component, components, onlyCids)
     let container = template.content
     let skip = onlyCids && !onlyCids.has(cid)
-    Array.from(container.childNodes).forEach((child, i) => {
-      if(child.nodeType === Node.ELEMENT_NODE){
-        child.setAttribute(PHX_COMPONENT, cid)
-        if(!child.id){ child.id = `${this.parentViewId()}-${cid}-${i}`}
-        if(skip){
-          child.setAttribute(PHX_SKIP, "")
-          child.innerHTML = ""
-        }
-      } else {
-        if(child.nodeValue.trim() !== ""){
-          logError(`only HTML element tags are allowed at the root of components.\n\n` +
-                   `got: "${child.nodeValue.trim()}"\n\n` +
-                   `within:\n`, template.innerHTML.trim())
 
-          let span = document.createElement("span")
-          span.innerText = child.nodeValue
-          span.setAttribute(PHX_COMPONENT, cid)
-          child.replaceWith(span)
+    let [hasChildNodes, hasChildComponents] =
+      Array.from(container.childNodes).reduce(([hasNodes, hasComponents], child, i) => {
+        if(child.nodeType === Node.ELEMENT_NODE){
+          if(child.getAttribute(PHX_COMPONENT)){
+            return [hasNodes, true]
+          }
+          child.setAttribute(PHX_COMPONENT, cid)
+          if(!child.id){ child.id = `${this.parentViewId()}-${cid}-${i}`}
+          if(skip){
+            child.setAttribute(PHX_SKIP, "")
+            child.innerHTML = ""
+          }
+          return [true, hasComponents]
         } else {
-          child.remove()
+          if(child.nodeValue.trim() !== ""){
+            logError(`only HTML element tags are allowed at the root of components.\n\n` +
+                    `got: "${child.nodeValue.trim()}"\n\n` +
+                    `within:\n`, template.innerHTML.trim())
+            child.replaceWith(this.createSpan(child.nodeValue, cid))
+            return [true, hasComponents]
+          } else {
+            child.remove()
+            return [hasNodes, hasComponents]
+          }
         }
-      }
-    })
+      }, [false, false])
 
-    return template.innerHTML
+    if(!hasChildNodes && !hasChildComponents){
+      logError(`expected at least one HTML element tag inside a component, but the component is empty:\n`,
+               template.innerHTML.trim())
+      return this.createSpan("", cid).outerHTML
+    } else if(!hasChildNodes && hasChildComponents){
+      logError(`expected at least one HTML element tag directly inside a component, but only subcomponents were found. A component must render at least one HTML tag directly inside itself.`,
+               template.innerHTML.trim())
+      return template.innerHTML
+    } else {
+      return template.innerHTML
+    }
+  }
+
+  createSpan(text, cid) {
+    let span = document.createElement("span")
+    span.innerText = text
+    span.setAttribute(PHX_COMPONENT, cid)
+    return span
   }
 }
 
@@ -295,6 +367,27 @@ export class Rendered {
  * @param {Function} [opts.viewLogger] - The optional function to log debug information. For example:
  *
  *     (view, kind, msg, obj) => console.log(`${view.id} ${kind}: ${msg} - `, obj)
+ *
+ * @param {Object} [opts.metadata] - The optional object mapping event names to functions for
+ * populating event metadata. For example:
+ *
+ *     metadata: {
+ *       click: (e, el) => {
+ *         return {
+ *           ctrlKey: e.ctrlKey,
+ *           metaKey: e.metaKey,
+ *           detail: e.detail || 1,
+ *         }
+ *       },
+ *       keydown: (e, el) => {
+ *         return {
+ *           key: e.key,
+ *           ctrlKey: e.ctrlKey,
+ *           metaKey: e.metaKey,
+ *           shiftKey: e.shiftKey
+ *         }
+ *       }
+ *     }
 */
 export class LiveSocket {
   constructor(url, phxSocket, opts = {}){
@@ -313,6 +406,7 @@ export class LiveSocket {
     this.opts = opts
     this.params = closure(opts.params || {})
     this.viewLogger = opts.viewLogger
+    this.metadataCallbacks = opts.metadata || {}
     this.defaults = Object.assign(clone(DEFAULTS), opts.defaults || {})
     this.activeElement = null
     this.prevActive = null
@@ -325,16 +419,16 @@ export class LiveSocket {
     this.currentLocation = clone(window.location)
     this.hooks = opts.hooks || {}
     this.loaderTimeout = opts.loaderTimeout || LOADER_TIMEOUT
-
-    this.socket.onOpen(() => {
-      if(this.isUnloaded()){
-        this.destroyAllViews()
-        this.joinRootViews()
-      }
-      this.unloaded = false
-    })
+    this.boundTopLevelEvents = false
+    this.domCallbacks = opts.dom || {onBeforeElUpdated: closure()}
     window.addEventListener("unload", e => {
       this.unloaded = true
+    })
+    this.socket.onOpen(() => {
+      if(this.isUnloaded()){
+        // reload page if being restored from back/forward cache and browser does not emit "pageshow"
+        window.location.reload()
+      }
     })
   }
 
@@ -381,9 +475,11 @@ export class LiveSocket {
     }
   }
 
-  disconnect(){ this.socket.disconnect() }
+  disconnect(callback){ this.socket.disconnect(callback) }
 
   // private
+
+  triggerDOM(kind, args){ this.domCallbacks[kind](...args) }
 
   time(name, func){
     if(!this.isProfileEnabled() || !console.time){ return func() }
@@ -431,6 +527,7 @@ export class LiveSocket {
   }
 
   reloadWithJitter(view){
+    view.destroy()
     this.disconnect()
     let [minMs, maxMs] = RELOAD_JITTER
     let afterMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs
@@ -464,9 +561,11 @@ export class LiveSocket {
   joinRootViews(){
     let rootsFound = false
     DOM.all(document, `${PHX_VIEW_SELECTOR}:not([${PHX_PARENT_ID}])`, rootEl => {
-      let view = this.joinRootView(rootEl, this.getHref())
-      this.root = this.root || view
-      if(rootEl.getAttribute(PHX_MAIN)){ this.main = view }
+      if(!this.getRootById(rootEl.id)){
+        let view = this.joinRootView(rootEl, this.getHref())
+        this.root = this.root || view
+        if(rootEl.getAttribute(PHX_MAIN)){ this.main = view }
+      }
       rootsFound = true
     })
     return rootsFound
@@ -479,8 +578,8 @@ export class LiveSocket {
 
   replaceMain(href, flash, callback = null, linkRef = this.setPendingLink(href)){
     let mainEl = this.main.el
-    this.main.destroy()
     this.main.showLoader(this.loaderTimeout)
+    this.main.destroy()
 
     Browser.fetchPage(href, (status, html) => {
       if(status !== 200){ return this.redirect(href) }
@@ -517,39 +616,23 @@ export class LiveSocket {
     if(view){ callback(view) }
   }
 
-  withinTargets(el, phxTarget, callback){
-    if(/^(0|[1-9](\d?)+)$/.test(phxTarget)){
-      let myselfTarget = el
-      if(!myselfTarget){ throw new Error(`no phx-target's found matching @myself of ${phxTarget}`) }
-      this.owner(myselfTarget , view => callback(view, myselfTarget))
-    } else {
-      let targets = Array.from(document.querySelectorAll(phxTarget))
-      if(targets.length === 0){ throw new Error(`no phx-target's found for selector "${phxTarget}"`) }
-      targets.forEach(targetEl => {
-        this.owner(targetEl, view => callback(view, targetEl))
-      })
-    }
-  }
-
   withinOwners(childEl, callback){
-    let phxTarget = childEl.getAttribute(this.binding("target"))
-    if(phxTarget === null){
-      this.owner(childEl, view => callback(view, childEl))
-    } else {
-      this.withinTargets(childEl, phxTarget, callback)
-    }
+    this.owner(childEl, view => {
+      let phxTarget = childEl.getAttribute(this.binding("target"))
+      if(phxTarget === null){
+        callback(view, childEl)
+      } else {
+        view.withinTargets(phxTarget, callback)
+      }
+    })
   }
 
   getViewByEl(el){
     let rootId = el.getAttribute(PHX_ROOT_ID)
-    return this.getRootById(rootId).getDescendentByEl(el)
+    return maybe(this.getRootById(rootId), root => root.getDescendentByEl(el))
   }
 
   getRootById(id){ return this.roots[id] }
-
-  onViewError(view){
-    this.dropActiveElement(view)
-  }
 
   destroyAllViews(){
     for(let id in this.roots){
@@ -560,7 +643,7 @@ export class LiveSocket {
 
   destroyViewByEl(el){
     let root = this.getRootById(el.getAttribute(PHX_ROOT_ID))
-    root.destroyDescendent(el.id)
+    if(root){ root.destroyDescendent(el.id) }
   }
 
   setActiveElement(target){
@@ -579,7 +662,8 @@ export class LiveSocket {
     if(document.activeElement === document.body){
       return this.activeElement || document.activeElement
     } else {
-      return document.activeElement
+      // document.activeElement can be null in Internet Explorer 11
+      return document.activeElement || document.body;
     }
   }
 
@@ -601,39 +685,40 @@ export class LiveSocket {
   }
 
   bindTopLevelEvents(){
+    if(this.boundTopLevelEvents){ return }
+    this.boundTopLevelEvents = true
+    window.addEventListener("pageshow", e => {
+      if(e.persisted){ // reload page if being restored from back/forward cache
+        this.withPageLoading({to: window.location.href, kind: "redirect"})
+        window.location.reload()
+      }
+    })
     this.bindClicks()
     this.bindNav()
     this.bindForms()
     this.bind({keyup: "keyup", keydown: "keydown"}, (e, type, view, target, targetCtx, phxEvent, phxTarget) => {
       let matchKey = target.getAttribute(this.binding(PHX_KEY))
-      if(matchKey && matchKey.toLowerCase() !== e.key.toLowerCase()){ return }
+      let pressedKey = e.key && e.key.toLowerCase() // chrome clicked autocompletes send a keydown without key
+      if(matchKey && matchKey.toLowerCase() !== pressedKey){ return }
 
-      view.pushKey(target, targetCtx, type, phxEvent, {
-        altGraphKey: e.altGraphKey,
-        altKey: e.altKey,
-        code: e.code,
-        ctrlKey: e.ctrlKey,
-        key: e.key,
-        keyIdentifier: e.keyIdentifier,
-        keyLocation: e.keyLocation,
-        location: e.location,
-        metaKey: e.metaKey,
-        repeat: e.repeat,
-        shiftKey: e.shiftKey
-      })
+      view.pushKey(target, targetCtx, type, phxEvent, {key: e.key, ...this.eventMeta(type, e, target)})
     })
     this.bind({blur: "focusout", focus: "focusin"}, (e, type, view, targetEl, targetCtx, phxEvent, phxTarget) => {
       if(!phxTarget){
-        view.pushEvent(type, targetEl, targetCtx, phxEvent, {type: type})
+        view.pushEvent(type, targetEl, targetCtx, phxEvent, this.eventMeta(type, e, targetEl))
       }
     })
     this.bind({blur: "blur", focus: "focus"}, (e, type, view, targetEl, targetCtx, phxEvent, phxTarget) => {
       // blur and focus are triggered on document and window. Discard one to avoid dups
       if(phxTarget && !phxTarget !== "window"){
-        view.pushEvent(type, targetEl, targetCtx, phxEvent, {type: e.type})
+        view.pushEvent(type, targetEl, targetCtx, phxEvent, this.eventMeta(type, e, targetEl))
       }
     })
+  }
 
+  eventMeta(eventName, e, targetEl){
+    let callback = this.metadataCallbacks[eventName]
+    return callback ? callback(e, targetEl) : {}
   }
 
   setPendingLink(href){
@@ -698,25 +783,9 @@ export class LiveSocket {
         if(!phxEvent){ return }
         if(target.getAttribute("href") === "#"){ e.preventDefault() }
 
-        let meta = {
-          altKey: e.altKey,
-          shiftKey: e.shiftKey,
-          ctrlKey: e.ctrlKey,
-          metaKey: e.metaKey,
-          x: e.x || e.clientX,
-          y: e.y || e.clientY,
-          pageX: e.pageX,
-          pageY: e.pageY,
-          screenX: e.screenX,
-          screenY: e.screenY,
-          offsetX: e.offsetX,
-          offsetY: e.offsetY,
-          detail: e.detail || 1,
-        }
-
         this.debounce(target, e, () => {
           this.withinOwners(target, (view, targetCtx) => {
-            view.pushEvent("click", target, targetCtx, phxEvent, meta)
+            view.pushEvent("click", target, targetCtx, phxEvent, this.eventMeta("click", e, target))
           })
         })
       }, capture)
@@ -725,7 +794,7 @@ export class LiveSocket {
 
   bindNav(){
     if(!Browser.canPushState()){ return }
-    window.onpopstate = (event) => {
+    window.addEventListener("popstate", event => {
       if(!this.registerNewLocation(window.location)){ return }
       let {type, id, root} = event.state || {}
       let href = window.location.href
@@ -737,7 +806,7 @@ export class LiveSocket {
           if(root){ this.replaceRootHistory() }
         })
       }
-    }
+    }, false)
     window.addEventListener("click", e => {
       let target = closestPhxBinding(e.target, PHX_LIVE_LINK)
       let type = target && target.getAttribute(PHX_LIVE_LINK)
@@ -828,9 +897,8 @@ export class LiveSocket {
 
         this.debounce(input, e, () => {
           this.withinOwners(input.form, (view, targetCtx) => {
-            if(DOM.isTextualInput(input)){
-              DOM.putPrivate(input, PHX_HAS_FOCUSED, true)
-            } else {
+            DOM.putPrivate(input, PHX_HAS_FOCUSED, true)
+            if(!DOM.isTextualInput(input)){
               this.setActiveElement(input)
             }
             view.pushInput(input, targetCtx, phxEvent, e.target)
@@ -891,9 +959,19 @@ export let Browser = {
     req.ontimeout = () => callback(504)
     req.onreadystatechange = () => {
       if(req.readyState !== 4){ return }
-      if(req.getResponseHeader(LINK_HEADER) !== "live-link"){ return callback(400) }
-      if(req.status !== 200){ return callback(req.status) }
-      callback(200, req.responseText)
+      let requestURL = new URL(href)
+      let requestPath = requestURL.pathname + requestURL.search
+      let responseURL = maybe(req.getResponseHeader(RESPONSE_URL_HEADER) || req.responseURL, url => new URL(url))
+      let responsePath = responseURL ? responseURL.pathname + responseURL.search : null
+      if(req.getResponseHeader(LINK_HEADER) !== "live-link"){
+        return callback(400)
+      } else if(responseURL === null || responsePath != requestPath){
+        return callback(302)
+      } else if(req.status !== 200){
+        return callback(req.status)
+      } else {
+        callback(200, req.responseText)
+      }
     }
     req.send()
   },
@@ -949,9 +1027,16 @@ export let DOM = {
     return callback ? array.forEach(callback) : array
   },
 
-  findFirstComponentNode(node, cid){ return node.querySelector(`[${PHX_COMPONENT}="${cid}"]`) },
+  findComponentNodeList(node, cid){
+    let phxChildren = this.all(node, PHX_VIEW_SELECTOR)
+    let result = this.all(node, `[${PHX_COMPONENT}="${cid}"]`)
 
-  findComponentNodeList(node, cid){ return this.all(node, `[${PHX_COMPONENT}="${cid}"]`) },
+    if(phxChildren.length === 0){
+      return result
+    } else {
+      return result.filter(element => !phxChildren.some(node => node.contains(element)))
+    }
+  },
 
   findPhxChildrenInFragment(html, parentId){
     let template = document.createElement("template")
@@ -1010,55 +1095,70 @@ export let DOM = {
       case null: return callback()
 
       case "blur":
-        if(this.private(el, DEBOUNCE_BLUR)){ return }
-        el.addEventListener("blur", () => callback())
-        this.putPrivate(el, DEBOUNCE_BLUR, value)
+        if(this.once(el, "debounce-blur")){
+          el.addEventListener("blur", () => callback())
+        }
         return
 
       default:
         let timeout = parseInt(value)
+        let trigger = () => throttle ? this.deletePrivate(el, THROTTLED) : callback()
+        let currentCycle = this.incCycle(el, DEBOUNCE_TRIGGER, trigger)
         if(isNaN(timeout)){ return logError(`invalid throttle/debounce value: ${value}`) }
-        if(throttle && event.type === "keydown"){
-          let prevKey = this.private(el, DEBOUNCE_PREV_KEY)
-          this.putPrivate(el, DEBOUNCE_PREV_KEY, event.which)
-          if(prevKey !== event.which){ return callback() }
-        }
-        if(this.private(el, DEBOUNCE_TIMER)){ return }
+        if(throttle){
+          let newKeyDown = false
+          if(event.type === "keydown"){
+            let prevKey = this.private(el, DEBOUNCE_PREV_KEY)
+            this.putPrivate(el, DEBOUNCE_PREV_KEY, event.key)
+            newKeyDown = prevKey !== event.key
+          }
 
-        let clearTimer = (e) => {
-          if(throttle && e.type === PHX_CHANGE_EVENT && e.detail.triggeredBy.name === el.name){ return }
-          clearTimeout(this.private(el, DEBOUNCE_TIMER))
-          this.deletePrivate(el, DEBOUNCE_TIMER)
-        }
-        let debounceCallback = () => {
-          if(el.form){
-            el.form.removeEventListener(PHX_CHANGE_EVENT, clearTimer)
-            el.form.removeEventListener("submit", clearTimer)
+          if(!newKeyDown && this.private(el, THROTTLED)){
+            return false
+          } else {
+            callback()
+            this.putPrivate(el, THROTTLED, true)
+            setTimeout(() => this.triggerCycle(el, DEBOUNCE_TRIGGER), timeout)
           }
-          el.removeEventListener("blur", this.private(el, DEBOUNCE_BLUR_TIMER))
-          if (!throttle) {
-            el.removeEventListener("keydown", clearTimer)
-          }
-          this.deletePrivate(el, DEBOUNCE_BLUR_TIMER)
-          this.deletePrivate(el, DEBOUNCE_TIMER)
-          if(!throttle){ callback() }
+        } else {
+          setTimeout(() => this.triggerCycle(el, DEBOUNCE_TRIGGER, currentCycle), timeout)
         }
-        let blurCallback = () => {
-          clearTimeout(this.private(el, DEBOUNCE_TIMER))
-          debounceCallback()
+
+        if(el.form && this.once(el.form, "bind-debounce")){
+          el.form.addEventListener("submit", (e) => {
+            Array.from((new FormData(el.form)).entries(), ([name, val]) => {
+              let input = el.form.querySelector(`[name="${name}"]`)
+              this.incCycle(input, DEBOUNCE_TRIGGER)
+              this.deletePrivate(input, THROTTLED)
+            })
+          })
         }
-        this.putPrivate(el, DEBOUNCE_TIMER, setTimeout(debounceCallback, timeout))
-        el.addEventListener("blur", blurCallback)
-        if (!throttle) {
-          el.addEventListener("keydown", clearTimer)
+        if(this.once(el, "bind-debounce")){
+          el.addEventListener("blur", (e) => this.triggerCycle(el, DEBOUNCE_TRIGGER))
         }
-        this.putPrivate(el, DEBOUNCE_BLUR_TIMER, blurCallback)
-        if(el.form){
-          el.form.addEventListener(PHX_CHANGE_EVENT, clearTimer)
-          el.form.addEventListener("submit", clearTimer)
-        }
-        if(throttle){ callback() }
     }
+  },
+
+  triggerCycle(el, key, currentCycle){
+    let [cycle, trigger] = this.private(el, key)
+    if(!currentCycle){ currentCycle = cycle }
+    if(currentCycle === cycle){
+      this.incCycle(el, key)
+      trigger()
+    }
+  },
+
+  once(el, key){
+    if(this.private(el, key) === true){ return false }
+    this.putPrivate(el, key, true)
+    return true
+  },
+
+  incCycle(el, key, trigger = function(){}){
+    let [currentCycle, oldTrigger] = this.private(el, key) || [0, trigger]
+    currentCycle++
+    this.putPrivate(el, key, [currentCycle, trigger])
+    return currentCycle
   },
 
   discardError(container, el, phxFeedbackFor){
@@ -1114,17 +1214,21 @@ export let DOM = {
     }
   },
 
+  hasSelectionRange(el) {
+    return el.setSelectionRange && (el.type === "text" || el.type === "textarea")
+  },
+
   restoreFocus(focused, selectionStart, selectionEnd){
     if(!DOM.isTextualInput(focused)){ return }
     let wasFocused = focused.matches(":focus")
     if(focused.readOnly){ focused.blur() }
     if(!wasFocused){ focused.focus() }
-    if(focused.setSelectionRange && focused.type === "text" || focused.type === "textarea"){
+    if(this.hasSelectionRange(focused)){
       focused.setSelectionRange(selectionStart, selectionEnd)
     }
   },
 
-  isFormInput(el){ return /^(?:input|select|textarea)$/i.test(el.tagName) },
+  isFormInput(el){ return /^(?:input|select|textarea)$/i.test(el.tagName) && el.type !== "button"},
 
   syncAttrsToProps(el){
     if(el instanceof HTMLInputElement && CHECKABLE_INPUTS.indexOf(el.type.toLocaleLowerCase()) >= 0){
@@ -1138,54 +1242,114 @@ export let DOM = {
     return el.getAttribute && el.getAttribute(phxTriggerExternal) !== null
   },
 
-  undoRefs(ref, container){
-    DOM.all(container, `[${PHX_REF}]`, el => this.syncPendingRef(ref, el, el))
-  },
+  syncPendingRef(fromEl, toEl, disableWith){
+    let ref = fromEl.getAttribute(PHX_REF)
+    if(ref === null){ return true }
 
-  syncPendingRef(ref, fromEl, toEl){
-    let fromRefAttr = fromEl.getAttribute && fromEl.getAttribute(PHX_REF)
-    if(fromRefAttr === null){ return true }
-
-    let fromRef = parseInt(fromRefAttr)
-    if(ref !== null && ref >= fromRef){
-      [fromEl, toEl].forEach(el => {
-        // remove refs
-        el.removeAttribute(PHX_REF)
-        // retore inputs
-        if(el.getAttribute(PHX_READONLY) !== null){
-          el.readOnly = false
-          el.removeAttribute(PHX_READONLY)
-        }
-        if(el.getAttribute(PHX_DISABLED) !== null){
-          el.disabled = false
-          el.removeAttribute(PHX_DISABLED)
-        }
-        // remove classes
-        PHX_EVENT_CLASSES.forEach(className => DOM.removeClass(el, className))
-        // restore disables
-        let disableRestore = el.getAttribute(PHX_DISABLE_WITH_RESTORE)
-        if(disableRestore !== null){
-          el.innerText = disableRestore
-          el.removeAttribute(PHX_DISABLE_WITH_RESTORE)
-        }
-      })
-      return true
+    if(DOM.isFormInput(fromEl) || fromEl.getAttribute(disableWith) !== null){
+      DOM.putPrivate(fromEl, PHX_REF, toEl)
+      return false
     } else {
       PHX_EVENT_CLASSES.forEach(className => {
         fromEl.classList.contains(className) && toEl.classList.add(className)
       })
-      toEl.setAttribute(PHX_REF, fromEl.getAttribute(PHX_REF))
-      if(DOM.isFormInput(fromEl) || /submit/i.test(fromEl.type)){
-        return false
-      } else {
-        return true
+      toEl.setAttribute(PHX_REF, ref)
+      return true
+    }
+  },
+
+  cleanChildNodes(container, phxUpdate){
+    if (DOM.isPhxUpdate(container, phxUpdate, ["append", "prepend"])) {
+      let toRemove = []
+      container.childNodes.forEach(childNode => {
+        if(!childNode.id){
+          // Skip warning if it's an empty text node (e.g. a new-line)
+          let isEmptyTextNode = childNode.nodeType === Node.TEXT_NODE && childNode.nodeValue.trim() === ""
+          if(!isEmptyTextNode){
+            logError(`only HTML element tags with an id are allowed inside containers with phx-update.\n\n` +
+                    `removing illegal node: "${(childNode.outerHTML || childNode.nodeValue).trim()}"\n\n`)
+          }
+          toRemove.push(childNode)
+        }
+      })
+      toRemove.forEach(childNode => childNode.remove())
+    }
+  }
+}
+
+class DOMAppendPrependUpdate {
+  constructor(fromEl, toEl, updateType) {
+    let idsAfter = Array.from(toEl.children).map(child => child.id)
+    let idsBefore = []
+
+    let modifiedIds = []
+
+    fromEl.childNodes.forEach(child => {
+      if (child.id) { // all of our children should be elements with ids
+        idsBefore.push(child.id)
+        if (idsAfter.indexOf(child.id) >= 0) {
+          modifiedIds.push([child.id, child.previousElementSibling && child.previousElementSibling.id])
+        }
       }
+    })
+
+    this.containerID = toEl.id
+    this.updateType = updateType
+    this.modifiedIds = modifiedIds
+    this.newIds = idsAfter.filter(id => idsBefore.indexOf(id) < 0)
+  }
+
+  // We do the following to optimize append/prepend operations:
+  //   1) Track ids of modified elements & of new elements
+  //   2) All the modified elements are put back in the correct position in the DOM tree
+  //      by storing the id of their previous sibling
+  //   3) New elements are going to be put in the right place by morphdom during append.
+  //      For prepend, we move them to the first position in the container
+  perform() {
+    let el = DOM.byId(this.containerID)
+    this.modifiedIds.forEach(([id, siblingId]) => {
+      if (siblingId) {
+        maybe(document.getElementById(siblingId), sibling => {
+          maybe(document.getElementById(id), child => {
+            let isInRightPlace = child.previousElementSibling && child.previousElementSibling.id == sibling.id
+            if (!isInRightPlace) {
+              sibling.insertAdjacentElement("afterend", child)
+            }
+          })
+        })
+      } else {
+        // This is the first element in the container
+        maybe(document.getElementById(id), child => {
+          let isInRightPlace = child.previousElementSibling == null
+          if (!isInRightPlace) {
+            el.insertAdjacentElement("afterbegin", child)
+          }
+        })
+      }
+    })
+
+    if(this.updateType == "prepend"){
+      this.newIds.reverse().forEach(id => {
+        maybe(document.getElementById(id), child => el.insertAdjacentElement("afterbegin", child))
+      })
     }
   }
 }
 
 class DOMPatch {
-  constructor(view, container, id, html, targetCID, ref){
+  static patchEl(fromEl, toEl, activeElement){
+    morphdom(fromEl, toEl, {
+      childrenOnly: false,
+      onBeforeElUpdated: (fromEl, toEl) => {
+        if(activeElement && activeElement.isSameNode(fromEl) && DOM.isFormInput(fromEl)){
+          DOM.mergeFocusedInput(fromEl, toEl)
+          return false
+        }
+      }
+    })
+  }
+
+  constructor(view, container, id, html, targetCID){
     this.view = view
     this.liveSocket = view.liveSocket
     this.container = container
@@ -1193,7 +1357,6 @@ class DOMPatch {
     this.rootID = view.root.id
     this.html = html
     this.targetCID = targetCID
-    this.ref = ref
     this.cidPatch = typeof(this.targetCID) === "number"
     this.callbacks = {
       beforeadded: [], beforeupdated: [], beforediscarded: [], beforephxChildAdded: [],
@@ -1224,9 +1387,10 @@ class DOMPatch {
     if(this.isCIDPatch() && !targetContainer){ return }
 
     let focused = liveSocket.getActiveElement()
-    let {selectionStart, selectionEnd} = focused && DOM.isTextualInput(focused) ? focused : {}
+    let {selectionStart, selectionEnd} = focused && DOM.hasSelectionRange(focused) ? focused : {}
     let phxUpdate = liveSocket.binding(PHX_UPDATE)
     let phxFeedbackFor = liveSocket.binding(PHX_FEEDBACK_FOR)
+    let disableWith = liveSocket.binding(PHX_DISABLE_WITH)
     let phxTriggerExternal = liveSocket.binding(PHX_TRIGGER_ACTION)
     let added = []
     let updates = []
@@ -1256,23 +1420,24 @@ class DOMPatch {
           }
           added.push(el)
         },
-        onNodeDiscarded: (el) => { this.trackAfter("discarded", el) },
+        onNodeDiscarded: (el) => {
+          // nested view handling
+          if(DOM.isPhxChild(el)){ liveSocket.destroyViewByEl(el) }
+          this.trackAfter("discarded", el)
+        },
         onBeforeNodeDiscarded: (el) => {
           if(el.getAttribute && el.getAttribute(PHX_REMOVE) !== null){ return true }
-          if(el.parentNode !== null && DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"])){ return false }
+          if(el.parentNode !== null && DOM.isPhxUpdate(el.parentNode, phxUpdate, ["append", "prepend"]) && el.id){ return false }
           if(this.skipCIDSibling(el)){ return false }
           this.trackBefore("discarded", el)
-          // nested view handling
-          if(DOM.isPhxChild(el)){
-            liveSocket.destroyViewByEl(el)
-            return true
-          }
+          return true
         },
         onElUpdated: (el) => {
           if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){ el.submit() }
           updates.push(el)
         },
         onBeforeElUpdated: (fromEl, toEl) => {
+          DOM.cleanChildNodes(toEl, phxUpdate)
           if(this.skipCIDSibling(toEl)){ return false }
           if(fromEl.getAttribute(phxUpdate) === "ignore"){
             this.trackBefore("updated", fromEl, toEl)
@@ -1281,7 +1446,7 @@ class DOMPatch {
             return false
           }
           if(fromEl.type === "number" && (fromEl.validity && fromEl.validity.badInput)){ return false }
-          if(!DOM.syncPendingRef(this.ref, fromEl, toEl)){ return false }
+          if(!DOM.syncPendingRef(fromEl, toEl, disableWith)){ return false }
 
           // nested view handling
           if(DOM.isPhxChild(toEl)){
@@ -1304,23 +1469,8 @@ class DOMPatch {
             updates.push(fromEl)
             return false
           } else {
-            // we optimize append/prepend operations in two ways:
-            //   1) By tracking the previously appended ids. If the ids don't
-            //     change b/w patches, we know that we are going to re-arrange
-            //     the same appendPrependUpdates so we can skip the post-morph
-            //     append/prepend ops.
-            //   2) for appends, we can skip post-morph re-arranging if the
-            //     new content contains only new ids, because it will simply
-            //     be appended to the container
             if(DOM.isPhxUpdate(toEl, phxUpdate, ["append", "prepend"])){
-              let isAppend = toEl.getAttribute(phxUpdate) === "append"
-              let idsBefore = Array.from(fromEl.children).map(child => child.id)
-              let newIds = Array.from(toEl.children).map(child => child.id)
-              let isOnlyNewIds = isAppend && !newIds.find(id => idsBefore.indexOf(id) >= 0)
-
-              if(!isOnlyNewIds){
-                appendPrependUpdates.push([toEl.id, idsBefore])
-              }
+              appendPrependUpdates.push(new DOMAppendPrependUpdate(fromEl, toEl, toEl.getAttribute(phxUpdate)))
             }
             DOM.syncAttrsToProps(toEl)
             this.trackBefore("updated", fromEl, toEl)
@@ -1334,19 +1484,7 @@ class DOMPatch {
 
     if(appendPrependUpdates.length > 0){
       liveSocket.time("post-morph append/prepend restoration", () => {
-        appendPrependUpdates.forEach(([containerID, idsBefore]) => {
-          let el = DOM.byId(containerID)
-          let isAppend = el.getAttribute(phxUpdate) === "append"
-          if(isAppend){
-            idsBefore.reverse().forEach(id => {
-              maybe(document.getElementById(id), child => el.insertBefore(child, el.firstChild))
-            })
-          } else {
-            idsBefore.forEach(id => {
-              maybe(document.getElementById(id), child => el.appendChild(child))
-            })
-          }
-        })
+        appendPrependUpdates.forEach(update => update.perform())
       })
     }
 
@@ -1397,7 +1535,8 @@ class DOMPatch {
       template.innerHTML = html
       rest.forEach(el => el.remove())
       Array.from(diffContainer.childNodes).forEach(child => {
-        if(child.nodeType === Node.ELEMENT_NODE && child.getAttribute(PHX_COMPONENT) !== this.targetCID.toString()){
+        // we can only skip trackable nodes with an ID
+        if(child.id && child.nodeType === Node.ELEMENT_NODE && child.getAttribute(PHX_COMPONENT) !== this.targetCID.toString()){
           child.setAttribute(PHX_SKIP, "")
           child.innerHTML = ""
         }
@@ -1435,11 +1574,10 @@ export class View {
     this.channel = this.liveSocket.channel(`lv:${this.id}`, () => {
       return {
         url: this.href,
-        params: this.liveSocket.params(this.view),
+        params: this.connectParams(),
         session: this.getSession(),
         static: this.getStatic(),
-        flash: this.flash,
-        joins: this.joinCount
+        flash: this.flash
       }
     })
     this.showLoader(this.liveSocket.loaderTimeout)
@@ -1447,6 +1585,18 @@ export class View {
   }
 
   isMain(){ return this.liveSocket.main === this }
+
+  connectParams(){
+    let params = this.liveSocket.params(this.view)
+    let manifest =
+      DOM.all(document, `[${this.binding(PHX_TRACK_STATIC)}]`)
+      .map(node => node.src || node.href).filter(url => typeof(url) === "string")
+
+    if(manifest.length > 0){ params["_track_static"] = manifest }
+    params["_mounts"] = this.joinCount
+
+    return params
+  }
 
   name(){ return this.view }
 
@@ -1467,7 +1617,10 @@ export class View {
     clearTimeout(this.loaderTimer)
     let onFinished = () => {
       callback()
-      for(let id in this.viewHooks){ this.destroyHook(this.viewHooks[id]) }
+      for(let id in this.viewHooks){
+        this.viewHooks[id].__trigger__("beforeDestroy")
+        this.destroyHook(this.viewHooks[id])
+      }
     }
 
     this.log("destroyed", () => ["the child has been removed from the parent"])
@@ -1511,6 +1664,30 @@ export class View {
     this.liveSocket.log(this, kind, msgCallback)
   }
 
+  withinTargets(phxTarget, callback){
+    if(/^(0|[1-9]\d*)$/.test(phxTarget)){
+      let targets = DOM.findComponentNodeList(this.el, phxTarget)
+      if(targets.length === 0){
+        logError(`no component found matching phx-target of ${phxTarget}`)
+      } else {
+        callback(this, targets[0])
+      }
+    } else {
+      let targets = Array.from(document.querySelectorAll(phxTarget))
+      if(targets.length === 0){ logError(`nothing found matching the phx-target selector "${phxTarget}"`) }
+      targets.forEach(target => this.liveSocket.owner(target, view => callback(view, target)))
+    }
+  }
+
+  applyDiff(type, rawDiff, callback){
+    this.log(type, () => ["", clone(rawDiff)])
+    let {diff, reply, events, title} = Rendered.extract(rawDiff)
+    if(title){ DOM.putTitle(title) }
+
+    callback({diff, reply, events})
+    return reply
+  }
+
   onJoin(resp){
     let {rendered} = resp
     this.joinCount++
@@ -1518,57 +1695,57 @@ export class View {
     this.joinPending = true
     this.flash = null
 
-    this.log("join", () => ["", rendered])
-    if(rendered.title){ DOM.putTitle(rendered.title) }
     Browser.dropLocal(this.name(), CONSECUTIVE_RELOADS)
-    this.rendered = new Rendered(this.id, rendered)
-    let html = this.renderContainer(null, "join")
-    this.dropPendingRefs()
-    let forms = this.formsForRecovery(html)
+    this.applyDiff("mount", rendered, ({diff, events}) => {
+      this.rendered = new Rendered(this.id, diff)
+      let html = this.renderContainer(null, "join")
+      this.dropPendingRefs()
+      let forms = this.formsForRecovery(html)
 
-    if(this.joinCount > 1 && forms.length > 0){
-      forms.forEach((form, i) => {
-        this.pushFormRecovery(form, resp => {
-          if(i === forms.length - 1){
-            this.onJoinComplete(resp, html)
-          }
+      if(this.joinCount > 1 && forms.length > 0){
+        forms.forEach((form, i) => {
+          this.pushFormRecovery(form, resp => {
+            if(i === forms.length - 1){
+              this.onJoinComplete(resp, html, events)
+            }
+          })
         })
-      })
-    } else {
-      this.onJoinComplete(resp, html)
-    }
+      } else {
+        this.onJoinComplete(resp, html, events)
+      }
+    })
   }
 
   dropPendingRefs(){ DOM.all(this.el, `[${PHX_REF}]`, el => el.removeAttribute(PHX_REF)) }
 
-  formsForRecovery(html){
-    let phxChange = this.binding("change")
-    let template = document.createElement("template")
-    template.innerHTML = html
-
-    return(
-      DOM.all(this.el, `form[${phxChange}], form[${this.binding("submit")}]`)
-         .filter(form => this.ownsElement(form))
-         .filter(form => template.content.querySelector(`form[${phxChange}="${form.getAttribute(phxChange)}"]`))
-    )
-  }
-
-  onJoinComplete({live_patch}, html){
+  onJoinComplete({live_patch}, html, events){
+    // In order to provide a better experience, we want to join
+    // all LiveViews first and only then apply their patches.
     if(this.joinCount > 1 || (this.parent && !this.parent.isJoinPending())){
-      return this.applyJoinPatch(live_patch, html)
+      return this.applyJoinPatch(live_patch, html, events)
     }
 
-    let newChildren = DOM.findPhxChildrenInFragment(html, this.id).filter(c => this.joinChild(c))
+    // One downside of this approach is that we need to find phxChildren
+    // in the html fragment, instead of directly on the DOM. The fragment
+    // also does not include PHX_STATIC, so we need to copy it over from
+    // the DOM.
+    let newChildren = DOM.findPhxChildrenInFragment(html, this.id).filter(toEl => {
+      let fromEl = toEl.id && this.el.querySelector(`#${toEl.id}`)
+      let phxStatic = fromEl && fromEl.getAttribute(PHX_STATIC)
+      if(phxStatic){ toEl.setAttribute(PHX_STATIC, phxStatic) }
+      return this.joinChild(toEl)
+    })
+
     if(newChildren.length === 0){
       if(this.parent){
-        this.root.pendingJoinOps.push([this, () => this.applyJoinPatch(live_patch, html)])
+        this.root.pendingJoinOps.push([this, () => this.applyJoinPatch(live_patch, html, events)])
         this.parent.ackJoin(this)
       } else {
         this.onAllChildJoinsComplete()
-        this.applyJoinPatch(live_patch, html)
+        this.applyJoinPatch(live_patch, html, events)
       }
     } else {
-      this.root.pendingJoinOps.push([this, () => this.applyJoinPatch(live_patch, html)])
+      this.root.pendingJoinOps.push([this, () => this.applyJoinPatch(live_patch, html, events)])
     }
   }
 
@@ -1577,18 +1754,25 @@ export class View {
     this.el.setAttribute(PHX_ROOT_ID, this.root.id)
   }
 
-  applyJoinPatch(live_patch, html){
+  dispatchEvents(events){
+    events.forEach(([event, payload]) => {
+      window.dispatchEvent(new CustomEvent(`phx:hook:${event}`, {detail: payload}))
+    })
+  }
+
+  applyJoinPatch(live_patch, html, events){
     this.attachTrueDocEl()
     let patch = new DOMPatch(this, this.el, this.id, html, null)
     patch.markPrunableContentForRemoval()
-    this.joinPending = false
-    this.performPatch(patch)
+    this.performPatch(patch, false)
     this.joinNewChildren()
     DOM.all(this.el, `[${this.binding(PHX_HOOK)}]`, hookEl => {
       let hook = this.addHook(hookEl)
       if(hook){ hook.__trigger__("mounted") }
     })
 
+    this.joinPending = false
+    this.dispatchEvents(events)
     this.applyPendingUpdates()
 
     if(live_patch){
@@ -1600,7 +1784,19 @@ export class View {
     this.stopCallback()
   }
 
-  performPatch(patch){
+  triggerBeforeUpdateHook(fromEl, toEl){
+    this.liveSocket.triggerDOM("onBeforeElUpdated", [fromEl, toEl])
+    let hook = this.getHook(fromEl)
+    let isIgnored = hook && fromEl.getAttribute(this.binding(PHX_UPDATE)) === "ignore"
+    if(hook && !fromEl.isEqualNode(toEl) && !(isIgnored && isEqualObj(fromEl.dataset, toEl.dataset))){
+      hook.__trigger__("beforeUpdate")
+      return hook
+    }
+  }
+
+  triggerUpdatedHook(hook){ hook.__trigger__("updated") }
+
+  performPatch(patch, pruneCids){
     let destroyedCIDs = []
     let phxChildrenAdded = false
     let updatedHookIds = new Set()
@@ -1613,17 +1809,12 @@ export class View {
     patch.after("phxChildAdded", el => phxChildrenAdded = true)
 
     patch.before("updated", (fromEl, toEl) => {
-      let hook = this.getHook(fromEl)
-      let isIgnored = hook && fromEl.getAttribute(this.binding(PHX_UPDATE)) === "ignore"
-      if(hook && !fromEl.isEqualNode(toEl) && !(isIgnored && isEqualObj(fromEl.dataset, toEl.dataset))){
-        updatedHookIds.add(fromEl.id)
-        hook.__trigger__("beforeUpdate")
-      }
+      let hook = this.triggerBeforeUpdateHook(fromEl, toEl)
+      if(hook){ updatedHookIds.add(fromEl.id) }
     })
 
     patch.after("updated", el => {
-      let hook = this.getHook(el)
-      if(hook && updatedHookIds.has(el.id)){ hook.__trigger__("updated") }
+      if(updatedHookIds.has(el.id)){ this.triggerUpdatedHook(this.getHook(el)) }
     })
 
     patch.before("discarded", (el) => {
@@ -1639,7 +1830,13 @@ export class View {
     })
 
     patch.perform()
-    this.maybePushComponentsDestroyed(destroyedCIDs)
+
+    // We should not pruneCids on joins. Otherwise, in case of
+    // rejoins, we may notify cids that no longer belong to the
+    // current LiveView to be removed.
+    if(pruneCids) {
+      this.maybePushComponentsDestroyed(destroyedCIDs)
+    }
 
     return phxChildrenAdded
   }
@@ -1699,38 +1896,33 @@ export class View {
     this.pendingJoinOps = []
   }
 
-  update(diff, cidAck, ref){
-    if(isEmpty(diff) && ref === null){ return }
-    if(diff.title){ DOM.putTitle(diff.title) }
-    if(this.isJoinPending() || this.liveSocket.hasPendingLink()){ return this.pendingDiffs.push({diff, cid: cidAck, ref}) }
+  update(diff, events){
+    if(this.isJoinPending() || this.liveSocket.hasPendingLink()){
+      return this.pendingDiffs.push({diff, events})
+    }
 
-    this.log("update", () => ["", diff])
     this.rendered.mergeDiff(diff)
     let phxChildrenAdded = false
 
-    // when we don't have an acknowledgement CID and the diff only contains
-    // component diffs, then walk components and patch only the parent component
-    // containers found in the diff. Otherwise, patch entire LV container.
-    if(typeof(cidAck) === "number"){
-      this.liveSocket.time("component ack patch complete", () => {
-        if(this.componentPatch(diff[COMPONENTS][cidAck], cidAck, ref)){ phxChildrenAdded = true }
-      })
-    } else if(this.rendered.isComponentOnlyDiff(diff)){
+    // When the diff only contains component diffs, then walk components
+    // and patch only the parent component containers found in the diff.
+    // Otherwise, patch entire LV container.
+    if(this.rendered.isComponentOnlyDiff(diff)){
       this.liveSocket.time("component patch complete", () => {
         let parentCids = DOM.findParentCIDs(this.el, this.rendered.componentCIDs(diff))
         parentCids.forEach(parentCID => {
-          if(this.componentPatch(diff[COMPONENTS][parentCID], parentCID, ref)){ phxChildrenAdded = true }
+          if(this.componentPatch(this.rendered.getComponent(diff, parentCID), parentCID)){ phxChildrenAdded = true }
         })
       })
     } else if(!isEmpty(diff)){
       this.liveSocket.time("full patch complete", () => {
         let html = this.renderContainer(diff, "update")
-        let patch = new DOMPatch(this, this.el, this.id, html, null, ref)
-        phxChildrenAdded = this.performPatch(patch)
+        let patch = new DOMPatch(this, this.el, this.id, html, null)
+        phxChildrenAdded = this.performPatch(patch, true)
       })
     }
 
-    DOM.undoRefs(ref, this.el)
+    this.dispatchEvents(events)
     if(phxChildrenAdded){ this.joinNewChildren() }
   }
 
@@ -1743,11 +1935,11 @@ export class View {
     })
   }
 
-  componentPatch(diff, cid, ref){
+  componentPatch(diff, cid){
     if(isEmpty(diff)) return false
     let html = this.rendered.componentToString(cid)
-    let patch = new DOMPatch(this, this.el, this.id, html, cid, ref)
-    let childrenAdded = this.performPatch(patch)
+    let patch = new DOMPatch(this, this.el, this.id, html, cid)
+    let childrenAdded = this.performPatch(patch, true)
     return childrenAdded
   }
 
@@ -1759,6 +1951,7 @@ export class View {
     let callbacks = this.liveSocket.getHookCallbacks(hookName)
 
     if(callbacks){
+      if(!el.id){ logError(`no DOM ID for hook "${hookName}". Hooks require a unique ID on each element.`, el)}
       let hook = new ViewHook(this, el, callbacks)
       this.viewHooks[ViewHook.elementID(hook.el)] = hook
       return hook
@@ -1769,11 +1962,12 @@ export class View {
 
   destroyHook(hook){
     hook.__trigger__("destroyed")
+    hook.__cleanup__()
     delete this.viewHooks[ViewHook.elementID(hook.el)]
   }
 
   applyPendingUpdates(){
-    this.pendingDiffs.forEach(({diff, cid, ref}) => this.update(diff, cid, ref))
+    this.pendingDiffs.forEach(({diff, events}) => this.update(diff, events))
     this.pendingDiffs = []
   }
 
@@ -1788,13 +1982,16 @@ export class View {
   }
 
   bindChannel(){
-    this.onChannel("diff", (diff) => this.update(diff))
+    // The diff event should be handled by the regular update operations.
+    // All other operations are queued to be applied only after join.
+    this.liveSocket.onChannel(this.channel, "diff", (rawDiff) => {
+      this.applyDiff("update", rawDiff, ({diff, events}) => this.update(diff, events))
+    })
     this.onChannel("redirect", ({to, flash}) => this.onRedirect({to, flash}))
     this.onChannel("live_patch", (redir) => this.onLivePatch(redir))
     this.onChannel("live_redirect", (redir) => this.onLiveRedirect(redir))
-    this.onChannel("session", ({token}) => this.el.setAttribute(PHX_SESSION, token))
     this.channel.onError(reason => this.onError(reason))
-    this.channel.onClose(() => this.onError({reason: "closed"}))
+    this.channel.onClose(() => this.onClose())
   }
 
   destroyAllChildren(){
@@ -1837,24 +2034,32 @@ export class View {
   }
 
   onJoinError(resp){
-    if(resp.redirect || resp.live_redirect){ this.channel.leave() }
+    if(resp.redirect || resp.live_redirect){
+      this.joinPending = false
+      this.channel.leave()
+    }
     if(resp.redirect){ return this.onRedirect(resp.redirect) }
     if(resp.live_redirect){ return this.onLiveRedirect(resp.live_redirect) }
     this.log("error", () => ["unable to join", resp])
     return this.liveSocket.reloadWithJitter(this)
   }
 
-  onError(reason){
-    if(this.isJoinPending()){ return this.liveSocket.reloadWithJitter(this) }
+  onClose(){
+    if(this.isDestroyed()){ return }
+    if(this.isJoinPending() || this.liveSocket.hasPendingLink()){ return this.liveSocket.reloadWithJitter(this) }
     this.destroyAllChildren()
-    this.log("error", () => ["view crashed", reason])
-    this.liveSocket.onViewError(this)
-    document.activeElement.blur()
+    this.liveSocket.dropActiveElement(this)
+    // document.activeElement can be null in Internet Explorer 11
+    if(document.activeElement){ document.activeElement.blur() }
     if(this.liveSocket.isUnloaded()){
       this.showLoader(BEFORE_UNLOAD_LOADER_TIMEOUT)
-    } else {
-      this.displayError()
     }
+  }
+
+  onError(reason){
+    this.onClose()
+    this.log("error", () => ["view crashed", reason])
+    if(!this.liveSocket.isUnloaded()){ this.displayError() }
   }
 
   displayError(){
@@ -1863,7 +2068,7 @@ export class View {
     this.setContainerClasses(PHX_DISCONNECTED_CLASS, PHX_ERROR_CLASS)
   }
 
-  pushWithReply(refGenerator, event, payload, onReply = function(){ }){
+  pushWithReply(refGenerator, event, payload, onReply = function(){}){
     let [ref, [el]] = refGenerator ? refGenerator() : [null, []]
     let onLoadingDone = function(){}
     if(el && (el.getAttribute(this.binding(PHX_PAGE_LOADING)) !== null)){
@@ -1874,15 +2079,52 @@ export class View {
     return(
       this.liveSocket.wrapPush(() => {
         return this.channel.push(event, payload, PUSH_TIMEOUT).receive("ok", resp => {
-          if(resp.diff || ref !== null){ this.update(resp.diff || {}, payload.cid, ref) }
+          let hookReply = null
+          if(ref !== null){ this.undoRefs(ref) }
+          if(resp.diff){
+            hookReply = this.applyDiff("update", resp.diff, ({diff, events}) => {
+              this.update(diff, events)
+            })
+          }
           if(resp.redirect){ this.onRedirect(resp.redirect) }
           if(resp.live_patch){ this.onLivePatch(resp.live_patch) }
           if(resp.live_redirect){ this.onLiveRedirect(resp.live_redirect) }
           onLoadingDone()
-          onReply(resp)
+          onReply(resp, hookReply)
         })
       })
     )
+  }
+
+  undoRefs(ref){
+    DOM.all(this.el, `[${PHX_REF}="${ref}"]`, el => {
+      // remove refs
+      el.removeAttribute(PHX_REF)
+      // restore inputs
+      if(el.getAttribute(PHX_READONLY) !== null){
+        el.readOnly = false
+        el.removeAttribute(PHX_READONLY)
+      }
+      if(el.getAttribute(PHX_DISABLED) !== null){
+        el.disabled = false
+        el.removeAttribute(PHX_DISABLED)
+      }
+      // remove classes
+      PHX_EVENT_CLASSES.forEach(className => DOM.removeClass(el, className))
+      // restore disables
+      let disableRestore = el.getAttribute(PHX_DISABLE_WITH_RESTORE)
+      if(disableRestore !== null){
+        el.innerText = disableRestore
+        el.removeAttribute(PHX_DISABLE_WITH_RESTORE)
+      }
+      let toEl = DOM.private(el, PHX_REF)
+      if(toEl){
+        let hook = this.triggerBeforeUpdateHook(el, toEl)
+        DOMPatch.patchEl(el, toEl, this.liveSocket.getActiveElement())
+        if(hook){ this.triggerUpdatedHook(hook) }
+        DOM.deletePrivate(el, PHX_REF)
+      }
+    })
   }
 
   putRef(elements, event){
@@ -1924,13 +2166,16 @@ export class View {
     }
   }
 
-  pushHookEvent(targetCtx, event, payload){
-    this.pushWithReply(null, "event", {
+  pushHookEvent(targetCtx, event, payload, onReply){
+    let [ref, els] = this.putRef([], "hook")
+    this.pushWithReply(() => [ref, els], "event", {
       type: "hook",
       event: event,
       value: payload,
       cid: this.closestComponentID(targetCtx)
-    })
+    }, (resp, reply) => onReply(reply, ref))
+
+    return ref
   }
 
   extractMeta(el, meta){
@@ -1968,7 +2213,6 @@ export class View {
   }
 
   pushInput(inputEl, targetCtx, phxEvent, eventTarget, callback){
-    DOM.dispatchEvent(inputEl.form, PHX_CHANGE_EVENT, {triggeredBy: inputEl})
     this.pushWithReply(() => this.putRef([inputEl, inputEl.form], "change"), "event", {
       type: "form",
       event: phxEvent,
@@ -1982,7 +2226,7 @@ export class View {
     let refGenerator = () => {
       let disables = DOM.all(formEl, `[${this.binding(PHX_DISABLE_WITH)}]`)
       let buttons = DOM.all(formEl, "button").filter(filterIgnored)
-      let inputs = DOM.all(formEl, "input").filter(filterIgnored)
+      let inputs = DOM.all(formEl, "input,textarea,select").filter(filterIgnored)
 
       buttons.forEach(button => {
         button.setAttribute(PHX_DISABLED, button.disabled)
@@ -2012,7 +2256,6 @@ export class View {
   }
 
   pushLinkPatch(href, targetEl, callback){
-    if(!this.isLoading()){ this.showLoader(this.liveSocket.loaderTimeout) }
     let linkRef = this.liveSocket.setPendingLink(href)
     let refGen = targetEl ? () => this.putRef([targetEl], "click") : null
 
@@ -2022,8 +2265,6 @@ export class View {
       } else if(this.liveSocket.commitPendingLink(linkRef)){
         this.href = href
         this.applyPendingUpdates()
-        this.hideLoader()
-        this.triggerReconnected()
         callback && callback()
       }
     }).receive("timeout", () => this.liveSocket.redirect(window.location.href))
@@ -2078,20 +2319,38 @@ class ViewHook {
     this.__view = view
     this.__liveSocket = view.liveSocket
     this.__callbacks = callbacks
+    this.__listeners = new Set()
     this.el = el
     this.viewName = view.name()
     this.el.phxHookId = this.constructor.makeID()
     for(let key in this.__callbacks){ this[key] = this.__callbacks[key] }
   }
 
-  pushEvent(event, payload = {}){
-    this.__view.pushHookEvent(null, event, payload)
+  pushEvent(event, payload = {}, onReply = function(){}){
+    return this.__view.pushHookEvent(null, event, payload, onReply)
   }
 
-  pushEventTo(phxTarget, event, payload = {}){
-    this.__liveSocket.withinTargets(null, phxTarget, (view, targetCtx) => {
-      view.pushHookEvent(targetCtx, event, payload)
+  pushEventTo(phxTarget, event, payload = {}, onReply = function(){}){
+    return this.__view.withinTargets(phxTarget, (view, targetCtx) => {
+      return view.pushHookEvent(targetCtx, event, payload, onReply)
     })
+  }
+
+  handleEvent(event, callback){
+    let callbackRef = (customEvent, bypass) => bypass ? event : callback(customEvent.detail)
+    window.addEventListener(`phx:hook:${event}`, callbackRef)
+    this.__listeners.add(callbackRef)
+    return callbackRef
+  }
+
+  removeHandleEvent(callbackRef){
+    let event = callbackRef(null, true)
+    window.removeEventListener(`phx:hook:${event}`, callbackRef)
+    this.__listeners.delete(callbackRef)
+  }
+
+  __cleanup__(){
+    this.__listeners.forEach(callbackRef => this.removeHandleEvent(callbackRef))
   }
 
   __trigger__(kind){

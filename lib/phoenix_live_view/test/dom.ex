@@ -3,7 +3,6 @@ defmodule Phoenix.LiveViewTest.DOM do
 
   @phx_component "data-phx-component"
   @static :s
-  @dynamics :d
   @components :c
 
   def ensure_loaded! do
@@ -58,10 +57,14 @@ defmodule Phoenix.LiveViewTest.DOM do
   defp value_key("value"), do: "value"
   defp value_key(_), do: nil
 
-  def attribute({_tag, attrs, _children}, key) do
-    case List.keyfind(attrs, key, 0) do
-      {_, value} -> value
-      nil -> nil
+  def tag(node), do: elem(node, 0)
+
+  def attribute(node, key) do
+    with {tag, attrs, _children} when is_binary(tag) <- node,
+         {_, value} <- List.keyfind(attrs, key, 0) do
+      value
+    else
+      _ -> nil
     end
   end
 
@@ -77,6 +80,8 @@ defmodule Phoenix.LiveViewTest.DOM do
   end
 
   def child_nodes({_, _, nodes}), do: nodes
+
+  def attrs({_, attrs, _}), do: attrs
 
   def inner_html!(html, id), do: html |> by_id!(id) |> child_nodes()
 
@@ -103,11 +108,12 @@ defmodule Phoenix.LiveViewTest.DOM do
       found = {id, session, static}
 
       if main == "true" do
-        [found | acc]
-      else
         acc ++ [found]
+      else
+        [found | acc]
       end
     end)
+    |> Enum.reverse()
   end
 
   def deep_merge(target, source) do
@@ -117,54 +123,79 @@ defmodule Phoenix.LiveViewTest.DOM do
     end)
   end
 
+  def filter(node, fun) do
+    node |> reverse_filter(fun) |> Enum.reverse()
+  end
+
+  def reverse_filter(node, fun) do
+    node
+    |> Floki.traverse_and_update([], fn node, acc ->
+      if fun.(node), do: {node, [node | acc]}, else: {node, acc}
+    end)
+    |> elem(1)
+  end
+
+  # Diff merging
+
+  def merge_diff(rendered, diff) do
+    {new, diff} = Map.pop(diff, @components)
+    rendered = deep_merge(rendered, diff)
+
+    # If we have any component, we need to get the components
+    # sent by the diff and remove any link between components
+    # statics. We cannot let those links reside in the diff
+    # as components can be removed at any time.
+    if new do
+      old = Map.get(rendered, @components, %{})
+
+      acc =
+        Enum.reduce(new, old, fn {cid, cdiff}, acc ->
+          value =
+            case cdiff do
+              %{@static => pointer} when is_integer(pointer) ->
+                deep_merge(find_component(cdiff, old, new), Map.delete(cdiff, @static))
+
+              %{} ->
+                deep_merge(Map.get(old, cid, %{}), cdiff)
+            end
+
+          Map.put(acc, cid, value)
+        end)
+
+      Map.put(rendered, @components, acc)
+    else
+      rendered
+    end
+  end
+
+  defp find_component(%{@static => cid}, old, new) when is_integer(cid) and cid > 0,
+    do: find_component(new[cid], old, new)
+
+  defp find_component(%{@static => cid}, old, new) when is_integer(cid) and cid < 0,
+    do: find_component(old[-cid], old, new)
+
+  defp find_component(%{} = component, _old, _new),
+    do: component
+
+  def drop_cids(rendered, cids) do
+    update_in(rendered[@components], &Map.drop(&1, cids))
+  end
+
   # Diff rendering
 
   def render_diff(rendered) do
-    render_diff(rendered, Map.get(rendered, @components, %{}))
-  end
-
-  def render_diff(rendered, components) do
     rendered
-    |> to_output_buffer(components, [])
-    |> Enum.reverse()
+    |> Phoenix.LiveView.Diff.to_iodata(fn cid, contents ->
+      contents
+      |> IO.iodata_to_binary()
+      |> parse()
+      |> List.wrap()
+      |> Enum.map(walk_fun(&inject_cid_attr(&1, cid)))
+      |> to_html()
+    end)
     |> IO.iodata_to_binary()
     |> parse()
     |> List.wrap()
-  end
-
-  # for comprehension
-  defp to_output_buffer(%{@dynamics => for_dynamics, @static => statics}, components, acc) do
-    Enum.reduce(for_dynamics, acc, fn dynamics, acc ->
-      dynamics
-      |> Enum.with_index()
-      |> Enum.into(%{@static => statics}, fn {val, key} -> {key, val} end)
-      |> to_output_buffer(components, acc)
-    end)
-  end
-
-  defp to_output_buffer(%{@static => [head | tail]} = rendered, components, acc) do
-    tail
-    |> Enum.with_index(0)
-    |> Enum.reduce([head | acc], fn {static, index}, acc ->
-      [static | dynamic_to_buffer(rendered[index], components, acc)]
-    end)
-  end
-
-  defp dynamic_to_buffer(%{} = rendered, components, acc) do
-    to_output_buffer(rendered, components, []) ++ acc
-  end
-
-  defp dynamic_to_buffer(str, _components, acc) when is_binary(str), do: [str | acc]
-
-  defp dynamic_to_buffer(cid, components, acc) when is_integer(cid) do
-    html_with_cids =
-      components
-      |> Map.fetch!(cid)
-      |> render_diff(components)
-      |> Enum.map(walk_fun(&inject_cid_attr(&1, cid)))
-      |> to_html()
-
-    [html_with_cids | acc]
   end
 
   defp inject_cid_attr({tag, attrs, children}, cid) do
@@ -198,7 +229,7 @@ defmodule Phoenix.LiveViewTest.DOM do
   defp inner_component_ids(id, html) do
     html
     |> by_id!(id)
-    |> all("[#{@phx_component}]")
+    |> filter(&attribute(&1, @phx_component))
     |> all_attributes(@phx_component)
   end
 
@@ -221,9 +252,11 @@ defmodule Phoenix.LiveViewTest.DOM do
     {updated_existing_children, updated_appended} =
       Enum.reduce(dup_ids, {children_before, appended_children}, fn dup_id, {before, appended} ->
         patched_before =
-          walk(before, fn {tag, attrs, _} = node ->
+          walk(before, fn {tag, _, _} = node ->
             cond do
-              attribute(node, "id") == dup_id -> {tag, attrs, inner_html!(appended, dup_id)}
+              attribute(node, "id") == dup_id ->
+                new_node = by_id!(appended, dup_id)
+                {tag, attrs(new_node), child_nodes(new_node)}
               true -> node
             end
           end)
@@ -292,6 +325,7 @@ defmodule Phoenix.LiveViewTest.DOM do
 
   defp walk_fun(fun) when is_function(fun, 1) do
     fn
+      text when is_binary(text) -> text
       {:pi, _, _} = xml -> xml
       {:comment, _children} = comment -> comment
       {:doctype, _, _, _} = doctype -> doctype

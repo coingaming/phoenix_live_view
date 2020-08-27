@@ -12,7 +12,7 @@ defmodule Phoenix.LiveView.Utils do
   @max_flash_age :timer.seconds(60)
 
   @doc """
-  Assigns a value if it changed change.
+  Assigns a value if it changed.
   """
   def assign(%Socket{} = socket, key, value) do
     case socket do
@@ -57,21 +57,35 @@ defmodule Phoenix.LiveView.Utils do
   @doc """
   Configures the socket for use.
   """
-  def configure_socket(%{id: nil, assigns: assigns, view: view} = socket, private, action, flash) do
+  def configure_socket(%Socket{id: nil} = socket, private, action, flash, host_uri) do
     %{
       socket
       | id: random_id(),
         private: private,
-        assigns: configure_assigns(assigns, view, action, flash)
+        assigns: configure_assigns(socket.assigns, socket.view, action, flash),
+        host_uri: prune_uri(host_uri)
     }
   end
 
-  def configure_socket(%{assigns: assigns, view: view} = socket, private, action, flash) do
-    %{socket | private: private, assigns: configure_assigns(assigns, view, action, flash)}
+  def configure_socket(%Socket{} = socket, private, action, flash, host_uri) do
+    assigns = configure_assigns(socket.assigns, socket.view, action, flash)
+    %{socket | host_uri: prune_uri(host_uri), private: private, assigns: assigns}
   end
 
   defp configure_assigns(assigns, view, action, flash) do
     Map.merge(assigns, %{live_module: view, live_action: action, flash: flash})
+  end
+
+  defp prune_uri(:not_mounted_at_router), do: :not_mounted_at_router
+
+  defp prune_uri(url) do
+    %URI{host: host, port: port, scheme: scheme} = url
+
+    if host == nil do
+      raise "client did not send full URL, missing host in #{url}"
+    end
+
+    %URI{host: host, port: port, scheme: scheme}
   end
 
   @doc """
@@ -96,17 +110,20 @@ defmodule Phoenix.LiveView.Utils do
   Renders the view with socket into a rendered struct.
   """
   def to_rendered(socket, view) do
+    assigns = render_assigns(socket)
+
     inner_content =
-      render_assigns(socket)
+      assigns
       |> view.render()
       |> check_rendered!(view)
 
     case layout(socket, view) do
       {layout_mod, layout_template} ->
-        socket = assign(socket, :inner_content, inner_content)
+        assigns = put_in(assigns[:inner_content], inner_content)
+        assigns = put_in(assigns.__changed__[:inner_content], true)
 
         layout_template
-        |> layout_mod.render(render_assigns(socket))
+        |> layout_mod.render(assigns)
         |> check_rendered!(layout_mod)
 
       false ->
@@ -145,7 +162,11 @@ defmodule Phoenix.LiveView.Utils do
   @doc """
   Clears the flash.
   """
-  def clear_flash(%Socket{} = socket), do: assign(socket, :flash, %{})
+  def clear_flash(%Socket{} = socket) do
+    socket
+    |> assign(:flash, %{})
+    |> Map.update!(:changed, &Map.delete(&1, {:private, :flash}))
+  end
 
   @doc """
   Clears the key from the flash.
@@ -153,20 +174,65 @@ defmodule Phoenix.LiveView.Utils do
   def clear_flash(%Socket{} = socket, key) do
     key = flash_key(key)
     new_flash = Map.delete(socket.assigns.flash, key)
-    assign(socket, :flash, new_flash)
+
+    socket
+    |> assign(:flash, new_flash)
+    |> update_changed({:private, :flash}, &Map.delete(&1 || %{}, key))
   end
 
   @doc """
   Puts a flash message in the socket.
   """
-  def put_flash(%Socket{assigns: assigns} = socket, kind, msg) do
-    kind = flash_key(kind)
-    new_flash = Map.put(assigns.flash, kind, msg)
-    assign(socket, :flash, new_flash)
+  def put_flash(%Socket{assigns: assigns} = socket, key, msg) do
+    key = flash_key(key)
+    new_flash = Map.put(assigns.flash, key, msg)
+
+    socket
+    |> assign(:flash, new_flash)
+    |> update_changed({:private, :flash}, &Map.put(&1 || %{}, key, msg))
+  end
+
+  @doc """
+  Returns a map of the flash messages which have changed.
+  """
+  def changed_flash(%Socket{} = socket) do
+    socket.changed[{:private, :flash}] || %{}
   end
 
   defp flash_key(binary) when is_binary(binary), do: binary
   defp flash_key(atom) when is_atom(atom), do: Atom.to_string(atom)
+
+  @doc """
+  Annotates the changes with the event to be pushed.
+  """
+  def push_event(%Socket{} = socket, event, %{} = payload) do
+    update_changed(socket, {:private, :push_events}, &[[event, payload] | &1 || []])
+  end
+
+  @doc """
+  Annotates the reply in the socket changes.
+  """
+  def put_reply(%Socket{} = socket, %{} = payload) do
+    update_changed(socket, {:private, :push_reply}, fn _ -> payload end)
+  end
+
+  @doc """
+  Returns the push events in the socket.
+  """
+  def get_push_events(%Socket{} = socket) do
+    Enum.reverse(socket.changed[{:private, :push_events}] || [])
+  end
+
+  @doc """
+  Returns the reply in the socket.
+  """
+  def get_reply(%Socket{} = socket) do
+    socket.changed[{:private, :push_reply}]
+  end
+
+  defp update_changed(%Socket{} = socket, key, func) do
+    update_in(socket.changed[key], func)
+  end
 
   @doc """
   Returns the configured signing salt for the endpoint.
@@ -188,14 +254,15 @@ defmodule Phoenix.LiveView.Utils do
   @doc """
   Returns the internal or external matched LiveView route info for the given uri
   """
-  def live_link_info!(%{router: nil}, view, _uri) do
+  def live_link_info!(%Socket{router: nil}, view, _uri) do
     raise ArgumentError,
           "cannot invoke handle_params/3 on #{inspect(view)} " <>
             "because it is not mounted nor accessed through the router live/3 macro"
   end
 
-  def live_link_info!(%{router: router, endpoint: endpoint}, view, uri) do
+  def live_link_info!(%Socket{router: router, endpoint: endpoint} = socket, view, uri) do
     %URI{host: host, path: path, query: query} = parsed_uri = URI.parse(uri)
+    host = host || socket.host_uri.host
     query_params = if query, do: Plug.Conn.Query.decode(query), else: %{}
     decoded_path = URI.decode(path || "")
     split_path = for segment <- String.split(decoded_path, "/"), segment != "", do: segment
@@ -206,7 +273,7 @@ defmodule Phoenix.LiveView.Utils do
         {:internal, Map.merge(query_params, path_params), action, parsed_uri}
 
       %{} ->
-        :external
+        {:external, parsed_uri}
 
       :error ->
         raise ArgumentError,
@@ -232,35 +299,89 @@ defmodule Phoenix.LiveView.Utils do
   end
 
   @doc """
-  Calls the optional `mount/N` callback, otherwise returns the socket as is.
+  Calls the `c:Phoenix.LiveView.mount/3` callback, otherwise returns the socket as is.
   """
-  def maybe_call_mount!(socket, view, args) do
-    arity = length(args)
+  def maybe_call_live_view_mount!(%Socket{} = socket, view, params, session) do
+    if function_exported?(view, :mount, 3) do
+      :telemetry.span(
+        [:phoenix, :live_view, :mount],
+        %{socket: socket, params: params, session: session},
+        fn ->
+          socket =
+            params
+            |> view.mount(session, socket)
+            |> handle_mount_result!({:mount, 3, view})
 
-    if function_exported?(view, :mount, arity) do
-      case apply(view, :mount, args) do
-        {:ok, %Socket{} = socket, opts} when is_list(opts) ->
-          validate_mount_redirect!(socket.redirected)
-          Enum.reduce(opts, socket, fn {key, val}, acc -> mount_opt(acc, key, val, arity) end)
-
-        {:ok, %Socket{} = socket} ->
-          validate_mount_redirect!(socket.redirected)
-          socket
-
-        other ->
-          raise ArgumentError, """
-          invalid result returned from #{inspect(view)}.mount/#{length(args)}.
-
-          Expected {:ok, socket} | {:ok, socket, opts}, got: #{inspect(other)}
-          """
-      end
+          {socket, %{socket: socket, params: params, session: session}}
+        end
+      )
     else
       socket
     end
   end
 
+  @doc """
+  Calls the `c:Phoenix.LiveComponent.mount/1` callback, otherwise returns the socket as is.
+  """
+  def maybe_call_live_component_mount!(%Socket{} = socket, view) do
+    if function_exported?(view, :mount, 1) do
+      socket
+      |> view.mount()
+      |> handle_mount_result!({:mount, 1, view})
+    else
+      socket
+    end
+  end
+
+  defp handle_mount_result!({:ok, %Socket{} = socket, opts}, {:mount, arity, _view})
+       when is_list(opts) do
+    validate_mount_redirect!(socket.redirected)
+
+    Enum.reduce(opts, socket, fn {key, val}, acc -> mount_opt(acc, key, val, arity) end)
+  end
+
+  defp handle_mount_result!({:ok, %Socket{} = socket}, {:mount, _arity, _view}) do
+    validate_mount_redirect!(socket.redirected)
+
+    socket
+  end
+
+  defp handle_mount_result!(response, {:mount, arity, view}) do
+    raise ArgumentError, """
+    invalid result returned from #{inspect(view)}.mount/#{arity}.
+
+    Expected {:ok, socket} | {:ok, socket, opts}, got: #{inspect(response)}
+    """
+  end
+
   defp validate_mount_redirect!({:live, {_, _}, _}), do: raise_bad_mount_and_live_patch!()
   defp validate_mount_redirect!(_), do: :ok
+
+  @doc """
+  Calls the `handle_params/3` callback, and returns the result.
+
+  This function expects the calling code has checked to see if this function has
+  been exported. Raises an `ArgumentError` on unexpected return types.
+  """
+  def call_handle_params!(%Socket{} = socket, view, params, uri) do
+    :telemetry.span(
+      [:phoenix, :live_view, :handle_params],
+      %{socket: socket, params: params, uri: uri},
+      fn ->
+        case view.handle_params(params, uri, socket) do
+          {:noreply, %Socket{} = socket} ->
+            {{:noreply, socket}, %{socket: socket, params: params, uri: uri}}
+
+          other ->
+            raise ArgumentError, """
+            invalid result returned from #{inspect(view)}.handle_params/3.
+
+            Expected {:noreply, socket}, got: #{inspect(other)}
+            """
+        end
+      end
+    )
+  end
 
   @doc """
   Calls the optional `update/2` callback, otherwise update the socket directly.
@@ -364,8 +485,12 @@ defmodule Phoenix.LiveView.Utils do
     %Socket{socket | private: Map.drop(private, keys)}
   end
 
-  defp render_assigns(socket) do
-    Map.put(socket.assigns, :socket, %Socket{socket | assigns: %Socket.AssignsNotInSocket{}})
+  defp render_assigns(%{assigns: assigns, changed: changed} = socket) do
+    socket = %Socket{socket | assigns: %Socket.AssignsNotInSocket{__assigns__: assigns}}
+
+    assigns
+    |> Map.put(:socket, socket)
+    |> Map.put(:__changed__, changed)
   end
 
   defp layout(socket, view) do

@@ -36,6 +36,10 @@ require more stability, it is recommended that you install using the
 If you want to use the latest features, you should follow the instructions
 given in the markdown file [here](guides/introduction/installation.md).
 
+### Requirements
+
+Although LiveView supports Elixir 1.7, which is [compatible](https://hexdocs.pm/elixir/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp) with Erlang/OTP 19–22, [LiveView requires Erlang/OTP 21+](https://github.com/phoenixframework/phoenix_live_view/blob/7fbdcef6e46135fa111ea3fda29d5e91f9aa7b0e/lib/phoenix_live_view/application.ex#L11).
+
 ## What makes LiveView unique?
 
 LiveView is server centric. You no longer have to worry about managing
@@ -72,7 +76,7 @@ anywhere else:
     app can push events to users as those events happen anywhere in
     the system. Do you want to notify a user that their best friend
     just connected? This is easily done without a single-line of
-    JavaScript and with no extra external dependencies.
+    custom JavaScript and with no extra external dependencies.
 
   * LiveView performs diff tracking: whenever you change a value on
     the server, LiveView will send to the client only the values that
@@ -86,7 +90,7 @@ anywhere else:
     the modified dynamic content is resent. This alongside diff tracking
     makes it so LiveView only sends a few bytes on every update, instead
     of sending kilobytes on every other user interaction - which would
-    be detrimental to the user experience;
+    be detrimental to the user experience.
 
 Finally, LiveView has been used by many developers and companies around
 the world, which helped us close the gaps in our feature set and make
@@ -118,7 +122,7 @@ All current Chrome, Safari, Firefox, and MS Edge are supported.
 IE11 support is available with the following polyfills:
 
 ```console
-$ npm install --save --prefix assets mdn-polyfills url-search-params-polyfill formdata-polyfill child-replace-with-polyfill classlist-polyfill @webcomponents/template shim-keyboard-event-key
+$ npm install --save --prefix assets mdn-polyfills url-search-params-polyfill formdata-polyfill child-replace-with-polyfill classlist-polyfill @webcomponents/template shim-keyboard-event-key core-js
 ```
 
 Note: The `shim-keyboard-event-key` polyfill is also required for [MS Edge 12-18](https://caniuse.com/#feat=keyboardevent-key).
@@ -129,6 +133,8 @@ import "mdn-polyfills/Object.assign"
 import "mdn-polyfills/CustomEvent"
 import "mdn-polyfills/String.prototype.startsWith"
 import "mdn-polyfills/Array.from"
+import "mdn-polyfills/Array.prototype.find"
+import "mdn-polyfills/Array.prototype.some"
 import "mdn-polyfills/NodeList.prototype.forEach"
 import "mdn-polyfills/Element.prototype.closest"
 import "mdn-polyfills/Element.prototype.matches"
@@ -139,8 +145,24 @@ import "formdata-polyfill"
 import "classlist-polyfill"
 import "@webcomponents/template"
 import "shim-keyboard-event-key"
+import "core-js/features/set"
 
 import {Socket} from "phoenix"
 import LiveSocket from "phoenix_live_view"
 ...
 ```
+
+## Contributing
+
+We appreciate any contribution to LiveView.
+
+Please see the Phoenix [Code of Conduct](https://github.com/phoenixframework/phoenix/blob/master/CODE_OF_CONDUCT.md) and [Contributing](https://github.com/phoenixframework/phoenix/blob/master/CONTRIBUTING.md) guides.
+
+Running the tests:
+
+```bash
+$ mix deps.get
+$ mix test
+```
+
+JS contributions are very welcome, but please do not include an updated `priv/static/phoenix_live_view.js` in pull requests. The maintainers will update it as part of the release process.

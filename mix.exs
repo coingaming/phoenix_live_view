@@ -1,7 +1,7 @@
 defmodule Phoenix.LiveView.MixProject do
   use Mix.Project
 
-  @version "0.12.1"
+  @version "0.14.4"
 
   def project do
     [
@@ -15,6 +15,7 @@ defmodule Phoenix.LiveView.MixProject do
       xref: [exclude: [Floki]],
       deps: deps(),
       docs: docs(),
+      name: "Phoenix LiveView",
       homepage_url: "http://www.phoenixframework.org",
       description: """
       Rich, real-time user experiences with server-rendered HTML
@@ -28,21 +29,21 @@ defmodule Phoenix.LiveView.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      mod: {Phoenix.LiveView.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {Phoenix.LiveView.Application, []}
     ]
   end
 
   defp deps do
     [
-      {:phoenix, "~> 1.4.17 or ~> 1.5.0"},
+      {:phoenix, "~> 1.5.3"},
       {:phoenix_html, "~> 2.14"},
+      {:telemetry, "~> 0.4.2 or ~> 0.5"},
       {:jason, "~> 1.0", optional: true},
-      {:ex_doc, "~> 0.20", only: :docs},
-      {:floki, "~> 0.24.0", only: :test},
+      {:ex_doc, "~> 0.22", only: :docs},
+      {:floki, "~> 0.26.0", only: :test},
       {:html_entities, ">= 0.0.0", only: :test}
     ]
   end
@@ -61,13 +62,26 @@ defmodule Phoenix.LiveView.MixProject do
 
   defp extras do
     [
-      "guides/introduction/installation.md"
+      "guides/introduction/installation.md",
+      "guides/client/bindings.md",
+      "guides/client/form-bindings.md",
+      "guides/client/dom-patching.md",
+      "guides/client/js-interop.md",
+      "guides/server/assigns-eex.md",
+      "guides/server/error-handling.md",
+      "guides/server/live-layouts.md",
+      "guides/server/live-navigation.md",
+      "guides/server/security-model.md",
+      "guides/server/telemetry.md",
+      "guides/server/using-gettext.md"
     ]
   end
 
   defp groups_for_extras do
     [
-      Introduction: ~r/guides\/introduction\/.?/
+      Introduction: ~r/guides\/introduction\/.?/,
+      "Server-side features": ~r/guides\/server\/.?/,
+      "Client-side integration": ~r/guides\/client\/.?/
     ]
   end
 

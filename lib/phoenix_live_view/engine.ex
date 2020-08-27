@@ -107,7 +107,7 @@ defmodule Phoenix.LiveView.Rendered do
   @type t :: %__MODULE__{
           static: [String.t()],
           dynamic:
-            (map | nil ->
+            (boolean() ->
                [
                  nil
                  | iodata()
@@ -149,7 +149,7 @@ defmodule Phoenix.LiveView.Engine do
   @moduledoc ~S"""
   The `.leex` (Live EEx) template engine that tracks changes.
 
-  On the docs below, we will explain how it works internally.
+  In the documentation below, we will explain how it works internally.
   For user-facing documentation, see `Phoenix.LiveView`.
 
   ## Phoenix.LiveView.Rendered
@@ -162,24 +162,25 @@ defmodule Phoenix.LiveView.Engine do
   allows the Elixir compiler to optimize this list and avoid
   allocating its strings on every render.
 
-  The `:dynamic` field contains a list of dynamic content.
+  The `:dynamic` field contains a function that takes a boolean argument
+  (see "Tracking changes" below), and returns a list of dynamic content.
   Each element in the list is either one of:
 
     1. iodata - which is the dynamic content
-    2. nil - the dynamic content did not change, see "Tracking changes" below
+    2. nil - the dynamic content did not change
     3. another `Phoenix.LiveView.Rendered` struct, see "Nesting and fingerprinting" below
     4. a `Phoenix.LiveView.Comprehension` struct, see "Comprehensions" below
-    4. a `Phoenix.LiveView.Component` struct, see "Component" below
+    5. a `Phoenix.LiveView.Component` struct, see "Component" below
 
   When you render a `.leex` template, you can convert the
-  rendered structure to iodata by intercalating the static
+  rendered structure to iodata by alternating the static
   and dynamic fields, always starting with a static entry
   followed by a dynamic entry. The last entry will always
   be static too. So the following structure:
 
       %Phoenix.LiveView.Rendered{
         static: ["foo", "bar", "baz"],
-        dynamic: ["left", "right"]
+        dynamic: fn track_changes? -> ["left", "right"] end
       }
 
   Results in the following content to be sent over the wire
@@ -197,11 +198,12 @@ defmodule Phoenix.LiveView.Engine do
   ## Tracking changes
 
   By default, a `.leex` template does not track changes.
-  Change tracking can be enabled by passing a changed
-  map when invoking the dynamic parts. The map should
-  contain the name of any changed field as key and the
-  boolean true as value. If a field is not listed in
-  `:changed`, then it is always considered unchanged.
+  Change tracking can be enabled by including a changed
+  map in the assigns with the key `__changed__` and passing
+  `true` to the dynamic parts. The map should contain
+  the name of any changed field as key and the boolean
+  true as value. If a field is not listed in `:changed`,
+  then it is always considered unchanged.
 
   If a field is unchanged and `.leex` believes a dynamic
   expression no longer needs to be computed, its value
@@ -249,7 +251,7 @@ defmodule Phoenix.LiveView.Engine do
   struct with the static parts, that are shared across all
   points, and a list of dynamics to be interpolated inside
   the static parts. If `@points` is a list with `%{x: 1, y: 2}`
-  and `%{x: 3, y: 4}`, the expression above would return:
+  and `%{x: 3, y: 4}`, the above expression would return:
 
       %Phoenix.LiveView.Comprehension{
         static: ["\n  x: ", "\n  y: ", "\n"],
@@ -261,7 +263,7 @@ defmodule Phoenix.LiveView.Engine do
 
   This allows `.leex` templates to drastically optimize
   the data sent by comprehensions, as the static parts
-  are emitted once, regardless of the number of items.
+  are emitted only once, regardless of the number of items.
 
   The list of dynamics is always a list of iodatas or components,
   as we don't perform change tracking inside the comprehensions
@@ -355,7 +357,7 @@ defmodule Phoenix.LiveView.Engine do
          dynamic = fn track_changes? ->
            changed =
              case var!(assigns) do
-               %{socket: %{changed: changed}} when track_changes? -> changed
+               %{__changed__: changed} when track_changes? -> changed
                _ -> nil
              end
 
@@ -405,18 +407,6 @@ defmodule Phoenix.LiveView.Engine do
 
   ## Optimize possible expressions into live structs (rendered / comprehensions)
 
-  defp to_live_struct({:live_component, meta, [_ | _] = args} = expr, vars, assigns) do
-    case Enum.split(args, -1) do
-      {args, [[do: do_block]]} ->
-        {args, vars, _} = analyze_list(args, vars, assigns, [])
-        do_block = maybe_block_to_rendered(do_block, vars)
-        to_safe({:live_component, meta, args ++ [[do: do_block]]}, true)
-
-      _ ->
-        to_safe(expr, true)
-    end
-  end
-
   defp to_live_struct({:for, _, [_ | _]} = expr, vars, _assigns) do
     with {:for, meta, [_ | _] = args} <- expr,
          {filters, [[do: {:__block__, _, block}]]} <- Enum.split(args, -1),
@@ -440,7 +430,7 @@ defmodule Phoenix.LiveView.Engine do
 
   defp to_live_struct({macro, meta, [_ | _] = args} = expr, vars, assigns)
        when is_atom(macro) do
-    if classify_taint(macro, args) == :live do
+    if classify_taint(macro, args) in [:live, :render] do
       {args, [opts]} = Enum.split(args, -1)
       {args, vars, _} = analyze_list(args, vars, assigns, [])
 
@@ -656,6 +646,12 @@ defmodule Phoenix.LiveView.Engine do
     {expr, vars, assigns}
   end
 
+  # Also skip special variables
+  defp analyze({name, _, context} = expr, vars, assigns)
+       when name in [:__MODULE__, :__ENV__, :__STACKTRACE__, :__DIR__] and is_atom(context) do
+    {expr, vars, assigns}
+  end
+
   # Vars always taint unless we are in restricted mode.
   defp analyze({name, _, context} = expr, {:restricted, map}, assigns)
        when is_atom(name) and is_atom(context) do
@@ -686,11 +682,7 @@ defmodule Phoenix.LiveView.Engine do
           {_, map} -> {expr, {:tainted, map}, assigns}
         end
 
-      :never ->
-        {args, vars, assigns} = analyze_with_restricted_vars(args, vars, assigns)
-        {{left, meta, args}, vars, assigns}
-
-      :live ->
+      :render ->
         {args, [opts]} = Enum.split(args, -1)
         {args, vars, assigns} = analyze_list(args, vars, assigns, [])
         {opts, vars, assigns} = analyze_with_restricted_vars(opts, vars, assigns)
@@ -699,6 +691,11 @@ defmodule Phoenix.LiveView.Engine do
       :none ->
         {left, vars, assigns} = analyze(left, vars, assigns)
         {args, vars, assigns} = analyze_list(args, vars, assigns, [])
+        {{left, meta, args}, vars, assigns}
+
+      # :never or :live
+      _ ->
+        {args, vars, assigns} = analyze_with_restricted_vars(args, vars, assigns)
         {{left, meta, args}, vars, assigns}
     end
   end
@@ -767,53 +764,48 @@ defmodule Phoenix.LiveView.Engine do
     to_safe(ast, false)
   end
 
-  defp to_safe(ast, false) do
-    to_safe(ast, line_from_expr(ast), [])
-  end
-
-  defp to_safe(ast, true) do
-    line = line_from_expr(ast)
-
-    extra_clauses =
-      quote generated: true do
-        %{__struct__: Phoenix.LiveView.Rendered} = other -> other
-        %{__struct__: Phoenix.LiveView.Component} = other -> other
-        %{__struct__: Phoenix.LiveView.Comprehension} = other -> other
-      end
-
-    to_safe(ast, line, extra_clauses)
+  defp to_safe(ast, bool) do
+    to_safe(ast, line_from_expr(ast), bool)
   end
 
   defp line_from_expr({_, meta, _}) when is_list(meta), do: Keyword.get(meta, :line, 0)
   defp line_from_expr(_), do: 0
 
-  # We can do the work at compile time
-  defp to_safe(literal, _line, _extra_clauses)
+  defp to_safe(literal, _line, _extra_clauses?)
        when is_binary(literal) or is_atom(literal) or is_number(literal) do
     Phoenix.HTML.Safe.to_iodata(literal)
   end
 
-  # We can do the work at runtime
-  defp to_safe(literal, line, _extra_clauses) when is_list(literal) do
+  defp to_safe(literal, line, _extra_clauses?) when is_list(literal) do
     quote line: line, do: Phoenix.HTML.Safe.List.to_iodata(unquote(literal))
   end
 
-  defp to_safe(expr, line, extra_clauses) do
-    # Keep stacktraces for protocol dispatch and coverage
-    safe_return = quote line: line, do: data
-    bin_return = quote line: line, do: Plug.HTML.html_escape_to_iodata(bin)
-    other_return = quote line: line, do: Phoenix.HTML.Safe.to_iodata(other)
+  defp to_safe(expr, line, false) do
+    quote line: line, do: unquote(__MODULE__).safe_to_iodata(unquote(expr))
+  end
 
-    # However ignore them for the generated clauses to avoid warnings
-    clauses =
-      quote generated: true do
-        {:safe, data} -> unquote(safe_return)
-        bin when is_binary(bin) -> unquote(bin_return)
-        other -> unquote(other_return)
-      end
+  defp to_safe(expr, line, true) do
+    quote line: line, do: unquote(__MODULE__).live_to_iodata(unquote(expr))
+  end
 
-    quote generated: true do
-      case unquote(expr), do: unquote(extra_clauses ++ clauses)
+  @doc false
+  def safe_to_iodata(expr) do
+    case expr do
+      {:safe, data} -> data
+      bin when is_binary(bin) -> Plug.HTML.html_escape_to_iodata(bin)
+      other -> Phoenix.HTML.Safe.to_iodata(other)
+    end
+  end
+
+  @doc false
+  def live_to_iodata(expr) do
+    case expr do
+      {:safe, data} -> data
+      %{__struct__: Phoenix.LiveView.Rendered} = other -> other
+      %{__struct__: Phoenix.LiveView.Component} = other -> other
+      %{__struct__: Phoenix.LiveView.Comprehension} = other -> other
+      bin when is_binary(bin) -> Plug.HTML.html_escape_to_iodata(bin)
+      other -> Phoenix.HTML.Safe.to_iodata(other)
     end
   end
 
@@ -869,14 +861,20 @@ defmodule Phoenix.LiveView.Engine do
     end
   end
 
+  # For case/if/unless, we are not leaking the variable given as argument,
+  # such as `if var = ... do`. This does not follow Elixir semantics, but
+  # yields better optimizations.
   defp classify_taint(:case, [_, _]), do: :live
   defp classify_taint(:if, [_, _]), do: :live
   defp classify_taint(:unless, [_, _]), do: :live
   defp classify_taint(:cond, [_]), do: :live
   defp classify_taint(:try, [_]), do: :live
   defp classify_taint(:receive, [_]), do: :live
-  defp classify_taint(:live_component, [_, _, [do: _]]), do: :live
-  defp classify_taint(:live_component, [_, _, _, [do: _]]), do: :live
+  defp classify_taint(:with, _), do: :live
+
+  defp classify_taint(:live_component, [_, _, [do: _]]), do: :render
+  defp classify_taint(:live_component, [_, _, _, [do: _]]), do: :render
+  defp classify_taint(:render_layout, [_, _, _, [do: _]]), do: :render
 
   defp classify_taint(:alias, [_]), do: :always
   defp classify_taint(:import, [_]), do: :always
@@ -886,7 +884,6 @@ defmodule Phoenix.LiveView.Engine do
   defp classify_taint(:require, [_, _]), do: :always
 
   defp classify_taint(:&, [_]), do: :never
-  defp classify_taint(:with, _), do: :never
   defp classify_taint(:for, _), do: :never
   defp classify_taint(:fn, _), do: :never
 

@@ -1,8 +1,9 @@
 defmodule Phoenix.LiveView.ComponentTest do
   use ExUnit.Case, async: false
-  use Phoenix.ConnTest
+  import Phoenix.ConnTest
 
   import Phoenix.LiveViewTest
+  import Phoenix.LiveView.TelemetryTestHelpers
   alias Phoenix.LiveViewTest.{Endpoint, DOM, StatefulComponent}
 
   @endpoint Endpoint
@@ -11,6 +12,12 @@ defmodule Phoenix.LiveView.ComponentTest do
   setup config do
     {:ok,
      conn: Plug.Test.init_test_session(Phoenix.ConnTest.build_conn(), config[:session] || %{})}
+  end
+
+  test "@myself" do
+    cid = %Phoenix.LiveComponent.CID{cid: 123}
+    assert String.Chars.to_string(cid) == "123"
+    assert Phoenix.HTML.Safe.to_iodata(cid) == "123"
   end
 
   test "renders successfully when disconnected", %{conn: conn} do
@@ -27,29 +34,60 @@ defmodule Phoenix.LiveView.ComponentTest do
              {"div", _,
               [
                 _,
-                {"div", [{"data-phx-component", "0"}, {"id", "chris"} | _],
-                 ["\n  chris says hi with socket: true\n  \n"]},
-                {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _],
-                 ["\n  jose says hi with socket: true\n  \n"]}
+                {"div", [{"data-phx-component", "1"}, {"id", "chris"} | _],
+                 ["\n  chris says hi\n  \n"]},
+                {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _],
+                 ["\n  jose says hi\n  \n"]}
               ]}
            ] = DOM.parse(render(view))
+  end
+
+  test "tracks additions and updates", %{conn: conn} do
+    {:ok, view, _} = live(conn, "/components")
+
+    html = render_click(view, "dup-and-disable", %{})
+
+    assert [
+             "Redirect: none\n\n  DISABLED\n\n\n  DISABLED\n\n\n  ",
+             {"div",
+              [
+                {"data-phx-component", "3"},
+                {"id", "chris-new"},
+                {"phx-target", "#chris-new"},
+                {"phx-click", "transform"}
+              ], ["\n  chris-new says hi\n  \n"]},
+             {"div",
+              [
+                {"data-phx-component", "4"},
+                {"id", "jose-new"},
+                {"phx-target", "#jose-new"},
+                {"phx-click", "transform"}
+              ], ["\n  jose-new says hi\n  \n"]}
+           ] = DOM.parse(html)
   end
 
   test "tracks removals", %{conn: conn} do
     {:ok, view, html} = live(conn, "/components")
 
     assert [
-             {"div", [{"data-phx-component", "0"}, {"id", "chris"} | _], ["\n  chris says" <> _]},
-             {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _], ["\n  jose says" <> _]}
+             {"div", [{"data-phx-component", "1"}, {"id", "chris"} | _], ["\n  chris says" <> _]},
+             {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _], ["\n  jose says" <> _]}
            ] = html |> DOM.parse() |> DOM.all("#chris, #jose")
 
     html = render_click(view, "delete-name", %{"name" => "chris"})
 
     assert [
-             {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _], ["\n  jose says" <> _]}
+             {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _], ["\n  jose says" <> _]}
            ] = html |> DOM.parse() |> DOM.all("#chris, #jose")
 
     refute view |> element("#chris") |> has_element?()
+  end
+
+  test "tracks removals when whole root changes", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/components")
+    assert render_click(view, "disable-all", %{}) =~ "Disabled\n"
+    # Sync to make sure it is still alive
+    assert render(view) =~ "Disabled\n"
   end
 
   test "preloads", %{conn: conn} do
@@ -64,59 +102,111 @@ defmodule Phoenix.LiveView.ComponentTest do
     assert_receive {:preload, [%{id: "chris"}, %{id: "jose"}]}
   end
 
-  test "handle_event delegates event to component", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/components")
+  describe "handle_event" do
+    test "delegates event to component", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/components")
 
-    html = view |> element("#chris") |> render_click(%{"op" => "upcase"})
+      html = view |> element("#chris") |> render_click(%{"op" => "upcase"})
 
-    assert [
-             _,
-             {"div", [{"data-phx-component", "0"}, {"id", "chris"} | _],
-              ["\n  CHRIS says hi with socket: true\n" <> _]},
-             {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _],
-              ["\n  jose says hi with socket: true\n" <> _]}
-           ] = DOM.parse(html)
+      assert [
+               _,
+               {"div", [{"data-phx-component", "1"}, {"id", "chris"} | _],
+                ["\n  CHRIS says hi\n" <> _]},
+               {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _],
+                ["\n  jose says hi\n" <> _]}
+             ] = DOM.parse(html)
 
-    html = view |> element("#jose") |> render_click(%{"op" => "title-case"})
+      html = view |> element("#jose") |> render_click(%{"op" => "title-case"})
 
-    assert [
-             _,
-             {"div", [{"data-phx-component", "0"}, {"id", "chris"} | _],
-              ["\n  CHRIS says hi with socket: true\n" <> _]},
-             {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _],
-              ["\n  Jose says hi with socket: true\n" <> _]}
-           ] = DOM.parse(html)
+      assert [
+               _,
+               {"div", [{"data-phx-component", "1"}, {"id", "chris"} | _],
+                ["\n  CHRIS says hi\n" <> _]},
+               {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _],
+                ["\n  Jose says hi\n" <> _]}
+             ] = DOM.parse(html)
 
-    html = view |> element("#jose") |> render_click(%{"op" => "dup"})
+      html = view |> element("#jose") |> render_click(%{"op" => "dup"})
 
-    assert [
-             _,
-             {"div", [{"data-phx-component", "0"}, {"id", "chris"} | _],
-              ["\n  CHRIS says hi with socket: true\n" <> _]},
-             {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _],
-              [
-                "\n  Jose says hi with socket: true\n  ",
-                {"div", [{"data-phx-component", "2"}, {"id", "Jose-dup"} | _],
-                 ["\n  Jose-dup says hi with socket: true\n" <> _]}
-              ]}
-           ] = DOM.parse(html)
+      assert [
+               _,
+               {"div", [{"data-phx-component", "1"}, {"id", "chris"} | _],
+                ["\n  CHRIS says hi\n" <> _]},
+               {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _],
+                [
+                  "\n  Jose says hi\n  ",
+                  {"div", [{"data-phx-component", "3"}, {"id", "Jose-dup"} | _],
+                   ["\n  Jose-dup says hi\n" <> _]}
+                ]}
+             ] = DOM.parse(html)
 
-    html = view |> element("#jose #Jose-dup") |> render_click(%{"op" => "upcase"})
+      html = view |> element("#jose #Jose-dup") |> render_click(%{"op" => "upcase"})
 
-    assert [
-             _,
-             {"div", [{"data-phx-component", "0"}, {"id", "chris"} | _],
-              ["\n  CHRIS says hi with socket: true\n" <> _]},
-             {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _],
-              [
-                "\n  Jose says hi with socket: true\n  ",
-                {"div", [{"data-phx-component", "2"}, {"id", "Jose-dup"} | _],
-                 ["\n  JOSE-DUP says hi with socket: true\n" <> _]}
-              ]}
-           ] = DOM.parse(html)
+      assert [
+               _,
+               {"div", [{"data-phx-component", "1"}, {"id", "chris"} | _],
+                ["\n  CHRIS says hi\n" <> _]},
+               {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _],
+                [
+                  "\n  Jose says hi\n  ",
+                  {"div", [{"data-phx-component", "3"}, {"id", "Jose-dup"} | _],
+                   ["\n  JOSE-DUP says hi\n" <> _]}
+                ]}
+             ] = DOM.parse(html)
 
-    assert view |> element("#jose #Jose-dup") |> render() ==
-             "<div data-phx-component=\"2\" id=\"Jose-dup\" phx-target=\"#Jose-dup\" phx-click=\"transform\">\n  JOSE-DUP says hi with socket: true\n  \n</div>"
+      assert view |> element("#jose #Jose-dup") |> render() ==
+               "<div data-phx-component=\"3\" id=\"Jose-dup\" phx-target=\"#Jose-dup\" phx-click=\"transform\">\n  JOSE-DUP says hi\n  \n</div>"
+    end
+
+    test "emits telemetry events when callback is successful", %{conn: conn} do
+      attach_telemetry([:phoenix, :live_component, :handle_event])
+      {:ok, view, _html} = live(conn, "/components")
+
+      view |> element("#chris") |> render_click(%{"op" => "upcase"})
+
+      assert_receive {:event, [:phoenix, :live_component, :handle_event, :start],
+                      %{system_time: _}, metadata}
+
+      assert %Phoenix.LiveView.Socket{connected?: true} = metadata.socket
+      assert metadata.event == "transform"
+      assert metadata.component == Phoenix.LiveViewTest.StatefulComponent
+      assert metadata.params == %{"op" => "upcase"}
+
+      assert_receive {:event, [:phoenix, :live_component, :handle_event, :stop], %{duration: _},
+                      metadata}
+
+      assert %Phoenix.LiveView.Socket{connected?: true} = metadata.socket
+      assert metadata.event == "transform"
+      assert metadata.component == Phoenix.LiveViewTest.StatefulComponent
+      assert metadata.params == %{"op" => "upcase"}
+    end
+
+    test "emits telemetry events when callback fails", %{conn: conn} do
+      Process.flag(:trap_exit, true)
+
+      attach_telemetry([:phoenix, :live_component, :handle_event])
+      {:ok, view, _html} = live(conn, "/components")
+
+      assert view |> element("#chris") |> render_click(%{"op" => "boom"}) |> catch_exit
+
+      assert_receive {:event, [:phoenix, :live_component, :handle_event, :start],
+                      %{system_time: _}, metadata}
+
+      assert %Phoenix.LiveView.Socket{connected?: true} = metadata.socket
+      assert metadata.event == "transform"
+      assert metadata.component == Phoenix.LiveViewTest.StatefulComponent
+      assert metadata.params == %{"op" => "boom"}
+
+      assert_receive {:event, [:phoenix, :live_component, :handle_event, :exception],
+                      %{duration: _}, metadata}
+
+      assert metadata.kind == :error
+      assert metadata.reason == {:case_clause, "boom"}
+      assert %Phoenix.LiveView.Socket{connected?: true} = metadata.socket
+      assert metadata.event == "transform"
+      assert metadata.component == Phoenix.LiveViewTest.StatefulComponent
+      assert metadata.params == %{"op" => "boom"}
+    end
   end
 
   describe "send_update" do
@@ -140,13 +230,13 @@ defmodule Phoenix.LiveView.ComponentTest do
       refute_receive {:preload, _}
 
       assert [
-               {"div", [{"data-phx-component", "0"}, {"id", "chris"} | _],
-                ["\n  NEW-chris says hi with socket: true\n  \n"]}
+               {"div", [{"data-phx-component", "1"}, {"id", "chris"} | _],
+                ["\n  NEW-chris says hi\n  \n"]}
              ] = view |> element("#chris") |> render() |> DOM.parse()
 
       assert [
-               {"div", [{"data-phx-component", "1"}, {"id", "jose"} | _],
-                ["\n  NEW-jose says hi with socket: true\n  \n"]}
+               {"div", [{"data-phx-component", "2"}, {"id", "jose"} | _],
+                ["\n  NEW-jose says hi\n  \n"]}
              ] = view |> element("#jose") |> render() |> DOM.parse()
     end
 
@@ -159,6 +249,33 @@ defmodule Phoenix.LiveView.ComponentTest do
                ref = Process.monitor(view.pid)
                assert_receive {:DOWN, ^ref, _, _, _}
              end) =~ "** (ArgumentError) missing required :id in send_update"
+    end
+
+    test "warns if component doesn't exist", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/components")
+
+      assert ExUnit.CaptureLog.capture_log(fn ->
+               send(view.pid, {:send_update, [{StatefulComponent, id: "nemo", name: "NEW-nemo"}]})
+               render(view)
+               refute_received {:updated, _}
+             end) =~
+               "send_update failed because component Phoenix.LiveViewTest.StatefulComponent with ID \"nemo\" does not exist or it has been removed"
+    end
+
+    test "raises if component module is not available", %{conn: conn} do
+      Process.flag(:trap_exit, true)
+      {:ok, view, _html} = live(conn, "/components")
+
+      assert ExUnit.CaptureLog.capture_log(fn ->
+               send(
+                 view.pid,
+                 {:send_update, [{NonexistentComponent, id: "chris", name: "NEW-chris"}]}
+               )
+
+               ref = Process.monitor(view.pid)
+               assert_receive {:DOWN, ^ref, _, _, _}
+             end) =~
+               "** (ArgumentError) send_update failed (module NonexistentComponent is not available)"
     end
   end
 
@@ -198,7 +315,7 @@ defmodule Phoenix.LiveView.ComponentTest do
     use Phoenix.LiveComponent
 
     # Assert endpoint was set
-    def mount(%{endpoint: Endpoint} = socket) do
+    def mount(%{endpoint: Endpoint, router: SomeRouter} = socket) do
       send(self(), {:mount, socket})
       {:ok, assign(socket, hello: "world")}
     end
@@ -244,19 +361,25 @@ defmodule Phoenix.LiveView.ComponentTest do
 
   describe "render_component/2" do
     test "full life-cycle without id" do
-      assert render_component(MyComponent, from: "test") =~ "FROM test world"
+      assert render_component(MyComponent, [from: "test"], router: SomeRouter) =~
+               "FROM test world"
+
       assert_received {:mount, %{assigns: %{flash: %{}}}}
       assert_received {:preload, [%{from: "test"}]}
       assert_received {:update, %{from: "test"}, %{assigns: %{flash: %{}}}}
     end
 
     test "full life-cycle with id" do
-      assert render_component(MyComponent, from: "test", id: "stateful") =~ "FROM test world"
-      assert_received {:mount, %{assigns: %{flash: %{}, myself: -1}}}
+      assert render_component(MyComponent, %{from: "test", id: "stateful"}, router: SomeRouter) =~
+               "FROM test world"
+
+      assert_received {:mount,
+                       %{assigns: %{flash: %{}, myself: %Phoenix.LiveComponent.CID{cid: -1}}}}
+
       assert_received {:preload, [%{from: "test", id: "stateful"}]}
 
       assert_received {:update, %{from: "test", id: "stateful"},
-                       %{assigns: %{flash: %{}, myself: -1}}}
+                       %{assigns: %{flash: %{}, myself: %Phoenix.LiveComponent.CID{cid: -1}}}}
     end
 
     test "render only" do

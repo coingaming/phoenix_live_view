@@ -41,6 +41,7 @@ defmodule Phoenix.LiveViewTest.Router do
     live "/router/foobarbaz/nested/show", FooBarLive.Nested.Index, :show
     live "/router/foobarbaz/custom", FooBarLive, :index, as: :custom_foo_bar
     live "/router/foobarbaz/with_live", Phoenix.LiveViewTest.Live.Nested.Module, :action
+    live "/router/foobarbaz/nosuffix", NoSuffix, :index, as: :custom_route
 
     live "/thermo", ThermostatLive
     live "/thermo/:id", ThermostatLive
@@ -57,6 +58,7 @@ defmodule Phoenix.LiveViewTest.Router do
     live "/shuffle", ShuffleLive
     live "/components", WithComponentLive
     live "/assigns-not-in-socket", AssignsNotInSocketLive
+    live "/errors", ErrorsLive
 
     # integration layout
     scope "/" do
@@ -77,6 +79,9 @@ defmodule Phoenix.LiveViewTest.Router do
     # integration flash
     live "/flash-root", FlashLive
     live "/flash-child", FlashChildLive
+
+    # integration events
+    live "/events", EventsLive
   end
 
   scope "/", as: :user_defined_metadata, alias: Phoenix.LiveViewTest do

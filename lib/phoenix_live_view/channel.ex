@@ -9,10 +9,10 @@ defmodule Phoenix.LiveView.Channel do
 
   @prefix :phoenix
 
-  def start_link({auth_payload, from, phx_socket}) do
-    hibernate_after = phx_socket.endpoint.config(:live_view)[:hibernate_after] || 15000
+  def start_link({endpoint, from}) do
+    hibernate_after = endpoint.config(:live_view)[:hibernate_after] || 15000
     opts = [hibernate_after: hibernate_after]
-    GenServer.start_link(__MODULE__, {auth_payload, from, phx_socket}, opts)
+    GenServer.start_link(__MODULE__, from, opts)
   end
 
   def send_update(module, id, assigns) do
@@ -20,21 +20,25 @@ defmodule Phoenix.LiveView.Channel do
   end
 
   def ping(pid) do
-    GenServer.call(pid, {@prefix, :ping})
+    GenServer.call(pid, {@prefix, :ping}, :infinity)
   end
 
   @impl true
-  def init(triplet) do
-    send(self(), {:mount, __MODULE__})
-    {:ok, triplet}
+  def init({pid, _ref}) do
+    {:ok, Process.monitor(pid)}
   end
 
   @impl true
-  def handle_info({:mount, __MODULE__}, triplet) do
-    mount(triplet)
+  def handle_info({Phoenix.Channel, auth_payload, from, phx_socket}, ref) do
+    Process.demonitor(ref)
+    mount(auth_payload, from, phx_socket)
   rescue
     # Normalize exceptions for better client debugging
     e -> reraise(e, __STACKTRACE__)
+  end
+
+  def handle_info({:DOWN, ref, _, _, _reason}, ref) do
+    {:stop, {:shutdown, :closed}, ref}
   end
 
   def handle_info({:DOWN, _, _, transport_pid, _reason}, %{transport_pid: transport_pid} = state) do
@@ -60,11 +64,11 @@ defmodule Phoenix.LiveView.Channel do
       {:internal, params, action, _} ->
         socket = socket |> assign_action(action) |> Utils.clear_flash()
 
-        params
-        |> view.handle_params(url, socket)
+        socket
+        |> Utils.call_handle_params!(view, params, url)
         |> handle_result({:handle_params, 3, msg.ref}, state)
 
-      :external ->
+      {:external, _uri} ->
         {:noreply, reply(state, msg.ref, :ok, %{link_redirect: true})}
     end
   end
@@ -97,6 +101,17 @@ defmodule Phoenix.LiveView.Channel do
         {:noreply, push_render(%{state | components: new_components}, diff, nil)}
 
       :noop ->
+        {module, id, _} = update
+
+        if function_exported?(module, :__info__, 1) do
+          # Only a warning, because there can be race conditions where a component is removed before a `send_update` happens.
+          Logger.debug(
+            "send_update failed because component #{inspect(module)} with ID #{inspect(id)} does not exist or it has been removed"
+          )
+        else
+          raise ArgumentError, "send_update failed (module #{inspect(module)} is not available)"
+        end
+
         {:noreply, state}
     end
   end
@@ -128,9 +143,6 @@ defmodule Phoenix.LiveView.Channel do
           {:noreply, new_state} -> {:reply, reply, new_state}
           {:stop, reason, new_state} -> {:stop, reason, reply, new_state}
         end
-
-      {:noreply, %Socket{} = new_socket} ->
-        handle_changed(state, new_socket, nil)
 
       other ->
         handle_result(other, {:handle_call, 3, nil}, state)
@@ -185,7 +197,22 @@ defmodule Phoenix.LiveView.Channel do
   end
 
   defp view_handle_event(%Socket{} = socket, event, val) do
-    socket.view.handle_event(event, val, socket)
+    :telemetry.span(
+      [:phoenix, :live_view, :handle_event],
+      %{socket: socket, event: event, params: val},
+      fn ->
+        case socket.view.handle_event(event, val, socket) do
+          {:noreply, %Socket{} = socket} ->
+            {{:noreply, socket}, %{socket: socket, event: event, params: val}}
+
+          {:reply, reply, %Socket{} = socket} ->
+            {{:reply, reply, socket}, %{socket: socket, event: event, params: val}}
+
+          other ->
+            raise_bad_callback_response!(other, socket.view, :handle_event, 3)
+        end
+      end
+    )
   end
 
   defp maybe_call_mount_handle_params(%{socket: socket} = state, router, url, params) do
@@ -208,8 +235,8 @@ defmodule Phoenix.LiveView.Channel do
                 " was not mounted at the router with the live/3 macro under URL #{inspect(url)}"
 
       true ->
-        params
-        |> view.handle_params(url, socket)
+        socket
+        |> Utils.call_handle_params!(view, params, url)
         |> mount_handle_params_result(state, :mount)
     end
   end
@@ -232,19 +259,28 @@ defmodule Phoenix.LiveView.Channel do
         %{socket: new_socket} = new_state = drop_redirect(new_state)
         uri = build_uri(new_state, to)
 
-        params
-        |> new_socket.view.handle_params(uri, assign_action(new_socket, action))
+        new_socket
+        |> assign_action(action)
+        |> Utils.call_handle_params!(new_socket.view, params, uri)
         |> mount_handle_params_result(new_state, {:live_patch, opts})
     end
+  end
+
+  defp handle_result({:reply, %{} = reply, %Socket{} = new_socket}, {:handle_event, 3, ref}, state) do
+    handle_changed(state, Utils.put_reply(new_socket, reply), ref)
   end
 
   defp handle_result({:noreply, %Socket{} = new_socket}, {_from, _arity, ref}, state) do
     handle_changed(state, new_socket, ref)
   end
 
-  defp handle_result(result, {:handle_call, 3, _ref}, state) do
+  defp handle_result(result, {name, arity, _ref}, state) do
+    raise_bad_callback_response!(result, state.socket.view, name, arity)
+  end
+
+  defp raise_bad_callback_response!(result, view, :handle_call, 3) do
     raise ArgumentError, """
-    invalid noreply from #{inspect(state.socket.view)}.handle_call/3 callback.
+    invalid noreply from #{inspect(view)}.handle_call/3 callback.
 
     Expected one of:
 
@@ -255,9 +291,22 @@ defmodule Phoenix.LiveView.Channel do
     """
   end
 
-  defp handle_result(result, {name, arity, _ref}, state) do
+  defp raise_bad_callback_response!(result, view, :handle_event, arity) do
     raise ArgumentError, """
-    invalid noreply from #{inspect(state.socket.view)}.#{name}/#{arity} callback.
+    invalid return from #{inspect(view)}.handle_event/#{arity} callback.
+
+    Expected one of:
+
+        {:noreply, %Socket{}}
+        {:reply, map, %Socket{}}
+
+    Got: #{inspect(result)}
+    """
+  end
+
+  defp raise_bad_callback_response!(result, view, name, arity) do
+    raise ArgumentError, """
+    invalid noreply from #{inspect(view)}.#{name}/#{arity} callback.
 
     Expected one of:
 
@@ -311,18 +360,27 @@ defmodule Phoenix.LiveView.Channel do
   end
 
   defp inner_component_handle_event(component_socket, component, event, val) do
-    case component.handle_event(event, val, component_socket) do
-      {:noreply, %Socket{redirected: redirected, assigns: assigns} = component_socket} ->
-        {component_socket, {redirected, assigns.flash}}
+    :telemetry.span(
+      [:phoenix, :live_component, :handle_event],
+      %{socket: component_socket, component: component, event: event, params: val},
+      fn ->
+        case component.handle_event(event, val, component_socket) do
+          {:noreply, %Socket{redirected: redirected, assigns: assigns} = component_socket} ->
+            {
+              {component_socket, {redirected, assigns.flash}},
+              %{socket: component_socket, component: component, event: event, params: val}
+            }
 
-      other ->
-        raise ArgumentError, """
-        invalid return from #{inspect(component)}.handle_event/3 callback.
+          other ->
+            raise ArgumentError, """
+            invalid return from #{inspect(component)}.handle_event/3 callback.
 
-        Expected: {:noreply, %Socket{}}
-        Got: #{inspect(other)}
-        """
-    end
+            Expected: {:noreply, %Socket{}}
+            Got: #{inspect(other)}
+            """
+        end
+      end
+    )
   end
 
   defp decode_event_type("form", url_encoded) do
@@ -350,7 +408,7 @@ defmodule Phoenix.LiveView.Channel do
   end
 
   defp gather_keys([], acc), do: acc
-
+  defp gather_keys([%{} = map], acc), do: gather_keys(map, acc)
   defp gather_keys(nil, acc), do: acc
 
   defp handle_changed(state, %Socket{} = new_socket, ref, pending_live_patch \\ nil) do
@@ -372,7 +430,7 @@ defmodule Phoenix.LiveView.Channel do
          |> push_noop(ref)}
 
       result ->
-        handle_redirect(new_state, result, flash_diff(new_socket, state.socket), ref)
+        handle_redirect(new_state, result, Utils.changed_flash(new_socket), ref)
     end
   end
 
@@ -429,28 +487,16 @@ defmodule Phoenix.LiveView.Channel do
   defp sync_handle_params_with_live_redirect(state, params, action, %{to: to} = opts, ref) do
     %{socket: socket} = state
 
-    case socket.view.handle_params(params, build_uri(state, to), assign_action(socket, action)) do
-      {:noreply, %Socket{} = new_socket} ->
-        handle_changed(state, new_socket, ref, opts)
+    {:noreply, %Socket{} = new_socket} =
+      socket
+      |> assign_action(action)
+      |> Utils.call_handle_params!(socket.view, params, build_uri(state, to))
 
-      other ->
-        raise ArgumentError, """
-        invalid return from #{inspect(socket.view)}.handle_params/3 callback.
-
-        Expected one of:
-
-            {:noreply, %Socket{}}
-
-        Got: #{inspect(other)}
-        """
-    end
+    handle_changed(state, new_socket, ref, opts)
   end
 
   defp push_live_patch(state, nil), do: state
-
-  defp push_live_patch(state, opts) do
-    push(state, "live_patch", opts)
-  end
+  defp push_live_patch(state, opts), do: push(state, "live_patch", opts)
 
   defp push_redirect(state, opts, nil = _ref) do
     push(state, "redirect", opts)
@@ -477,12 +523,6 @@ defmodule Phoenix.LiveView.Channel do
 
   defp push_render(state, diff, nil = _ref), do: push(state, "diff", diff)
   defp push_render(state, diff, ref), do: reply(state, ref, :ok, %{diff: diff})
-
-  defp flash_diff(new_socket, old_socket) do
-    Enum.reduce(Utils.get_flash(old_socket), Utils.get_flash(new_socket), fn {k, _}, acc ->
-      Map.delete(acc, k)
-    end)
-  end
 
   defp copy_flash(_state, flash, opts) when flash == %{},
     do: opts
@@ -519,7 +559,7 @@ defmodule Phoenix.LiveView.Channel do
 
   ## Mount
 
-  defp mount({%{"session" => session_token} = params, from, phx_socket}) do
+  defp mount(%{"session" => session_token} = params, from, phx_socket) do
     case Static.verify_session(phx_socket.endpoint, session_token, params["static"]) do
       {:ok, verified} ->
         %{private: %{connect_info: connect_info}} = phx_socket
@@ -567,21 +607,20 @@ defmodule Phoenix.LiveView.Channel do
     end
   end
 
-  defp mount({%{}, from, phx_socket}) do
+  defp mount(%{}, from, phx_socket) do
     Logger.error("Mounting #{phx_socket.topic} failed because no session was provided")
     GenServer.reply(from, {:error, %{reason: "stale"}})
     {:stop, :shutdown, :no_session}
   end
 
-  defp verify_flash(endpoint, verified, params) do
-    flash_token = params["flash"]
+  defp verify_flash(endpoint, verified, flash_token, connect_params) do
     verified_flash = verified[:flash]
 
     # verified_flash is fetched from the disconnected render.
     # params["flash"] is sent on live redirects and therefore has higher priority.
     cond do
       flash_token -> Utils.verify_flash(endpoint, flash_token)
-      params["joins"] == 0 && verified_flash -> verified_flash
+      connect_params["_mounts"] == 0 && verified_flash -> verified_flash
       true -> %{}
     end
   end
@@ -608,17 +647,17 @@ defmodule Phoenix.LiveView.Channel do
       transport_pid: transport_pid
     } = phx_socket
 
+    # Optional parameter handling
+    url = params["url"]
+    connect_params = params["params"]
+
     # Optional verified parts
     router = verified[:router]
-    flash = verify_flash(endpoint, verified, params)
+    flash = verify_flash(endpoint, verified, params["flash"], connect_params)
     socket_session = connect_info[:session] || %{}
 
     Process.monitor(transport_pid)
     load_csrf_token(endpoint, socket_session)
-
-    # Optional parameter handling
-    url = params["url"]
-    connect_params = params["params"]
 
     case params do
       %{"caller" => {pid, _}} when is_pid(pid) -> Process.put(:"$callers", [pid])
@@ -636,9 +675,10 @@ defmodule Phoenix.LiveView.Channel do
       router: router
     }
 
-    {params, parsed_uri, action} =
+    {params, host_uri, action} =
       case router && url && Utils.live_link_info!(socket, view, url) do
-        {:internal, params, action, parsed_uri} -> {params, parsed_uri, action}
+        {:internal, params, action, host_uri} -> {params, host_uri, action}
+        {:external, host_uri} -> {:not_mounted_at_router, host_uri, nil}
         _ -> {:not_mounted_at_router, :not_mounted_at_router, nil}
       end
 
@@ -647,12 +687,13 @@ defmodule Phoenix.LiveView.Channel do
         socket,
         mount_private(parent, assign_new, connect_params, connect_info),
         action,
-        flash
+        flash,
+        host_uri
       )
 
     socket
-    |> Utils.maybe_call_mount!(view, [params, Map.merge(socket_session, session), socket])
-    |> build_state(phx_socket, parsed_uri)
+    |> Utils.maybe_call_live_view_mount!(view, params, Map.merge(socket_session, session))
+    |> build_state(phx_socket)
     |> maybe_call_mount_handle_params(router, url, params)
     |> reply_mount(from)
   end
@@ -710,9 +751,8 @@ defmodule Phoenix.LiveView.Channel do
     end
   end
 
-  defp build_state(%Socket{} = lv_socket, %Phoenix.Socket{} = phx_socket, parsed_uri) do
+  defp build_state(%Socket{} = lv_socket, %Phoenix.Socket{} = phx_socket) do
     %{
-      uri: prune_uri(parsed_uri),
       join_ref: phx_socket.join_ref,
       serializer: phx_socket.serializer,
       socket: lv_socket,
@@ -722,20 +762,8 @@ defmodule Phoenix.LiveView.Channel do
     }
   end
 
-  defp prune_uri(:not_mounted_at_router), do: :not_mounted_at_router
-
-  defp prune_uri(url) do
-    %URI{host: host, port: port, scheme: scheme} = url
-
-    if host == nil do
-      raise "client did not send full URL, missing host in #{url}"
-    end
-
-    %URI{host: host, port: port, scheme: scheme}
-  end
-
-  defp build_uri(%{uri: uri}, "/" <> _ = to) do
-    URI.to_string(%{uri | path: to})
+  defp build_uri(%{socket: socket}, "/" <> _ = to) do
+    URI.to_string(%{socket.host_uri | path: to})
   end
 
   defp post_mount_prune(%{socket: socket} = state) do

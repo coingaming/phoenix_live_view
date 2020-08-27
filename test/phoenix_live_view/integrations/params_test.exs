@@ -1,8 +1,10 @@
 defmodule Phoenix.LiveView.ParamsTest do
-  use ExUnit.Case, async: true
-  use Phoenix.ConnTest
+  use ExUnit.Case
+  import Plug.Conn
+  import Phoenix.ConnTest
 
   import Phoenix.LiveViewTest
+  import Phoenix.LiveView.TelemetryTestHelpers
 
   alias Phoenix.LiveView
   alias Phoenix.LiveViewTest.Endpoint
@@ -33,6 +35,48 @@ defmodule Phoenix.LiveView.ParamsTest do
 
       assert response =~
                escape(~s|mount: %{"id" => "123", "query1" => "query1", "query2" => "query2"}|)
+    end
+
+    test "telemetry events are emitted on success", %{conn: conn} do
+      attach_telemetry([:phoenix, :live_view, :handle_params])
+
+      get(conn, "/counter/123", query1: "query1", query2: "query2")
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :start], %{system_time: _},
+                      metadata}
+
+      refute metadata.socket.connected?
+      assert metadata.params == %{"query1" => "query1", "query2" => "query2", "id" => "123"}
+      assert metadata.uri == "http://www.example.com/counter/123?query1=query1&query2=query2"
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :stop], %{duration: _},
+                      metadata}
+
+      refute metadata.socket.connected?
+      assert metadata.params == %{"query1" => "query1", "query2" => "query2", "id" => "123"}
+      assert metadata.uri == "http://www.example.com/counter/123?query1=query1&query2=query2"
+    end
+
+    test "telemetry events are emitted on exception", %{conn: conn} do
+      attach_telemetry([:phoenix, :live_view, :handle_params])
+
+      assert_raise Plug.Conn.WrapperError, ~r/boom/, fn ->
+        get(conn, "/errors", crash_on: "disconnected_handle_params")
+      end
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :start], %{system_time: _},
+                      metadata}
+
+      refute metadata.socket.connected?
+      assert metadata.params == %{"crash_on" => "disconnected_handle_params"}
+      assert metadata.uri == "http://www.example.com/errors?crash_on=disconnected_handle_params"
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :exception], %{duration: _},
+                      metadata}
+
+      refute metadata.socket.connected?
+      assert metadata.params == %{"crash_on" => "disconnected_handle_params"}
+      assert metadata.uri == "http://www.example.com/errors?crash_on=disconnected_handle_params"
     end
 
     test "hard redirects", %{conn: conn} do
@@ -90,8 +134,8 @@ defmodule Phoenix.LiveView.ParamsTest do
         |> get("/counter/123?q1=1", q2: "2")
         |> live()
 
-      assert html =~ escape(~s|params: %{"id" => "123", "q1" => "1"}|)
-      assert html =~ escape(~s|mount: %{"id" => "123", "q1" => "1"}|)
+      assert html =~ escape(~s|params: %{"id" => "123", "q1" => "1", "q2" => "2"}|)
+      assert html =~ escape(~s|mount: %{"id" => "123", "q1" => "1", "q2" => "2"}|)
     end
 
     test "is called on connected mount with query string params from live", %{conn: conn} do
@@ -100,6 +144,36 @@ defmodule Phoenix.LiveView.ParamsTest do
         |> live("/counter/123?q1=1")
 
       assert html =~ escape(~s|%{"id" => "123", "q1" => "1"}|)
+    end
+
+    test "telemetry events are emitted on success", %{conn: conn} do
+      attach_telemetry([:phoenix, :live_view, :handle_params])
+
+      live(conn, "/counter/123?foo=bar")
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :start], %{system_time: _},
+                      %{socket: %{connected?: true}} = metadata}
+
+      assert metadata.params == %{"id" => "123", "foo" => "bar"}
+      assert metadata.uri == "http://localhost:4000/counter/123?foo=bar"
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :stop], %{duration: _},
+                      %{socket: %{connected?: true}}}
+
+      assert metadata.params == %{"id" => "123", "foo" => "bar"}
+      assert metadata.uri == "http://localhost:4000/counter/123?foo=bar"
+    end
+
+    test "telemetry events are emitted on exception", %{conn: conn} do
+      attach_telemetry([:phoenix, :live_view, :handle_params])
+
+      assert catch_exit(live(conn, "/errors?crash_on=connected_handle_params"))
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :start], %{system_time: _},
+                      %{socket: %Phoenix.LiveView.Socket{connected?: true}}}
+
+      assert_receive {:event, [:phoenix, :live_view, :handle_params, :exception], %{duration: _},
+                      %{socket: %Phoenix.LiveView.Socket{connected?: true}}}
     end
 
     test "hard redirects", %{conn: conn} do
@@ -285,7 +359,7 @@ defmodule Phoenix.LiveView.ParamsTest do
       {:ok, counter_live, _html} =
         conn |> put_connect_params(%{"connect1" => "1"}) |> live("/counter/123")
 
-      assert render(counter_live) =~ escape(~s|connect: %{"connect1" => "1"}|)
+      assert render(counter_live) =~ escape(~s|connect: %{"_mounts" => 0, "connect1" => "1"}|)
     end
   end
 

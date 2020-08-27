@@ -27,7 +27,7 @@ defmodule Phoenix.LiveView.Router do
   edit, the URL changes to "/articles/1/edit", even though you are still
   within the same LiveView. Similarly, you may also want to show a "New"
   button, which opens up the modal to create new entries, and you want
-  that to reflect in the URL as "/articles/new".
+  this to be reflected in the URL as "/articles/new".
 
   In order to make it easier to recognize the current "action" your
   LiveView is on, you can pass the action option when defining LiveViews
@@ -35,10 +35,10 @@ defmodule Phoenix.LiveView.Router do
 
       live "/articles", ArticleLive.Index, :index
       live "/articles/new", ArticleLive.Index, :new
-      live "/articles/1/edit", ArticleLive.Index, :edit
+      live "/articles/:id/edit", ArticleLive.Index, :edit
 
   When an action is given, the generated route helpers are named after
-  the LiveView itself (the same as in a controller). For the example
+  the LiveView itself (in the same way as for a controller). For the example
   above, we will have:
 
       article_index_path(@socket, :index)
@@ -46,26 +46,41 @@ defmodule Phoenix.LiveView.Router do
       article_index_path(@socket, :edit, 123)
 
   The current action will always be available inside the LiveView as
-  the `@live_action` assign. `@live_action` will be `nil`
-  if no action is given on the route definition.
+  the `@live_action` assign, that can be used to render a LiveComponent:
+
+      <%= if @live_action == :new do %>
+        <%= live_component @socket, MyAppWeb.ArticleLive.FormComponent %>
+      <% end %>
+
+  Or can be used to show or hide parts of the template:
+
+      <%= if @live_action == :edit do %>
+        <%= render("form.html", user: @user) %>
+      <% end %>
+
+  Note that `@live_action` will be `nil` if no action is given on the route definition.
+
   ## Options
 
-    * `:session` - a map of strings keys and values to be merged into the session.
-      Maybe also be a "MFArgs" tuple that will receive the connection to compute
-      the session.
+    * `:session` - a map to be merged into the session, for example: `%{"my_key" => 123}`.
+      The map keys must be strings.
 
-    * `:layout` - the optional tuple for specifying a layout to render the
-      LiveView. If set, this option will replace the current root layout.
+      Can also be a "MFA" (module, function, arguments) tuple. That function will receive
+      the connection and should return a map (with string keys) to be merged into the session.
+      For example, `{MyModule, :my_function, []}` means `MyModule.my_function(conn)` is called.
 
-    * `:container` - the optional tuple for the HTML tag and DOM attributes to
+    * `:layout` - an optional tuple to specify the rendering layout for the LiveView.
+      If set, this option will replace the current root layout.
+
+    * `:container` - an optional tuple for the HTML tag and DOM attributes to
       be used for the LiveView container. For example: `{:li, style: "color: blue;"}`.
-      See `Phoenix.LiveView.Helpers.live_render/3` for more information on examples.
+      See `Phoenix.LiveView.Helpers.live_render/3` for more information and examples.
 
     * `:as` - optionally configures the named helper. Defaults to `:live` when
-      using a LiveView without actions or default to the LiveView name when using
+      using a LiveView without actions or defaults to the LiveView name when using
       actions.
 
-    * `:metadata` - a map to optional feed metadata used on telemetry events and route info
+    * `:metadata` - a map to optional feed metadata used on telemetry events and route info,
       for example: `%{route_name: :foo, access: :user}`.
 
   ## Examples
@@ -142,18 +157,18 @@ defmodule Phoenix.LiveView.Router do
       |> Keyword.put(:router, router)
       |> Keyword.put(:action, action)
 
-    {as_helper, as_action} = inferred_as(live_view, action)
+    {as_helper, as_action} = inferred_as(live_view, opts[:as], action)
 
     {as_action,
      alias: false,
-     as: opts[:as] || as_helper,
+     as: as_helper,
      private: Map.put(private, :phoenix_live_view, {live_view, opts}),
      metadata: Map.put(metadata, :phoenix_live_view, {live_view, action})}
   end
 
-  defp inferred_as(live_view, nil), do: {:live, live_view}
+  defp inferred_as(live_view, as, nil), do: {as || :live, live_view}
 
-  defp inferred_as(live_view, action) do
+  defp inferred_as(live_view, nil, action) do
     live_view
     |> Module.split()
     |> Enum.drop_while(&(not String.ends_with?(&1, "Live")))
@@ -172,6 +187,8 @@ defmodule Phoenix.LiveView.Router do
     end
   end
 
+  defp inferred_as(_live_view, as, action), do: {as, action}
+  
   defp cookie_flash(%Plug.Conn{cookies: %{@cookie_key => token}} = conn) do
     endpoint = Phoenix.Controller.endpoint_module(conn)
 

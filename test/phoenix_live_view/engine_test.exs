@@ -1,7 +1,7 @@
 defmodule Phoenix.LiveView.EngineTest do
   use ExUnit.Case, async: true
 
-  alias Phoenix.LiveView.{Engine, Rendered}
+  alias Phoenix.LiveView.{Engine, Rendered, Component}
 
   def safe(do: {:safe, _} = safe), do: safe
   def unsafe(do: {:safe, content}), do: content
@@ -230,6 +230,12 @@ defmodule Phoenix.LiveView.EngineTest do
       assert changed(template, %{}, %{}) == ["3", "3"]
     end
 
+    test "does not render dynamic for special variables" do
+      template = "<%= __MODULE__ %>"
+      assert changed(template, %{}, nil) == [""]
+      assert changed(template, %{}, %{}) == [nil]
+    end
+
     test "renders dynamic if it has variables from assigns" do
       template = "<%= foo = @foo %><%= foo %>"
       assert changed(template, %{foo: 123}, nil) == ["123", "123"]
@@ -373,6 +379,16 @@ defmodule Phoenix.LiveView.EngineTest do
                [""]
     end
 
+    test "converts if-do with var into rendered" do
+      template = "<%= if var = @foo do %>one<%= var %>two<% end %>"
+
+      assert [%Rendered{dynamic: ["true"], static: ["one", "two"]}] =
+               changed(template, %{foo: true}, nil)
+
+      assert changed(template, %{foo: true}, %{}) == [nil]
+      assert changed(template, %{foo: false}, %{foo: true}) == [""]
+    end
+
     test "converts if-do-else into rendered with dynamic condition" do
       template = "<%= if @bar do %>one<%= @foo %>two<% else %>uno<%= @baz %>dos<% end %>"
 
@@ -417,6 +433,27 @@ defmodule Phoenix.LiveView.EngineTest do
 
     test "converts if-do if-do into rendered" do
       template = "<%= if true do %>one<%= if true do %>uno<%= @foo %>dos<% end %>two<% end %>"
+
+      assert [
+               %Rendered{
+                 dynamic: [%Rendered{dynamic: ["123"], static: ["uno", "dos"]}],
+                 static: ["one", "two"]
+               }
+             ] = changed(template, %{foo: 123}, nil)
+
+      assert changed(template, %{foo: 123}, %{}) ==
+               [nil]
+
+      assert [
+               %Rendered{
+                 dynamic: [%Rendered{dynamic: ["123"], static: ["uno", "dos"]}],
+                 static: ["one", "two"]
+               }
+             ] = changed(template, %{foo: 123}, %{foo: true})
+    end
+
+    test "converts if-do if-do with var into rendered" do
+      template = "<%= if var = @foo do %>one<%= if var do %>uno<%= var %>dos<% end %>two<% end %>"
 
       assert [
                %Rendered{
@@ -676,7 +713,21 @@ defmodule Phoenix.LiveView.EngineTest do
       use Phoenix.View, root: "test/fixtures/templates", path: ""
     end
 
-    @assigns %{pre: "pre", inner: "inner", post: "post"}
+    defmodule SampleComponent do
+      use Phoenix.LiveComponent
+      def render(assigns), do: ~L"FROM COMPONENT"
+    end
+
+    defmacrop compile(string) do
+      EEx.compile_string(string, engine: Engine, file: __CALLER__.file, line: __CALLER__.line + 1)
+    end
+
+    @assigns %{
+      pre: "pre",
+      inner_content: "inner",
+      post: "post",
+      socket: %Phoenix.LiveView.Socket{}
+    }
 
     test "renders live engine to string" do
       assert Phoenix.View.render_to_string(View, "inner_live.html", @assigns) == "live: inner"
@@ -728,6 +779,20 @@ defmodule Phoenix.LiveView.EngineTest do
       assert Phoenix.View.render(View, "dead_with_live.html", @assigns) ==
                {:safe, ["pre: ", "pre", "\n", ["live: ", "inner", ""], "\npost: ", "post"]}
     end
+
+    test "renders inside render_layout/4" do
+      import Phoenix.View
+      assigns = @assigns
+
+      assert %Rendered{} =
+               compile("""
+               <%= render_layout(View, "inner_live.html", %{}) do %>
+                 WITH COMPONENT:
+                 <%= %Component{assigns: %{}, component: SampleComponent} %>
+               <% end %>
+               """)
+               |> expand_rendered(true)
+    end
   end
 
   defp eval(string, assigns \\ %{}) do
@@ -735,8 +800,7 @@ defmodule Phoenix.LiveView.EngineTest do
   end
 
   defp changed(string, assigns, changed, track_changes? \\ true) do
-    socket = %{changed: changed}
-    %{dynamic: dynamic} = eval(string, Map.put(assigns, :socket, socket))
+    %{dynamic: dynamic} = eval(string, Map.put(assigns, :__changed__, changed))
     expand_dynamic(dynamic, track_changes?)
   end
 

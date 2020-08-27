@@ -78,8 +78,16 @@ defmodule Phoenix.LiveComponent do
       end
 
   In stateful components, `c:mount/1` is called only once, when the
-  component is first rendered. Then for each rendering, the optional
+  component is first rendered. For each rendering, the optional
   `c:preload/1` and `c:update/2` callbacks are called before `c:render/1`.
+
+  So on first render, the following callbacks will be invoked:
+
+      preload(list_of_assigns) -> mount(socket) -> update(assigns, socket) -> render(assigns)
+
+  On subsequent renders, these callbacks will be invoked:
+
+      preload(list_of_assigns) -> update(assigns, socket) -> render(assigns)
 
   ## Targeting Component Events
 
@@ -122,7 +130,7 @@ defmodule Phoenix.LiveComponent do
   ### Preloading and update
 
   Every time a stateful component is rendered, both `c:preload/1` and
-  `c:update/2` is called. To understand why both callbacks are necessary,
+  `c:update/2` are called. To understand why both callbacks are necessary,
   imagine that you implement a component and the component needs to load
   some state from the database. For example:
 
@@ -172,7 +180,7 @@ defmodule Phoenix.LiveComponent do
   Generally speaking, you want to avoid both the parent LiveView and the
   LiveComponent working on two different copies of the state. Instead, you
   should assume only one of them to be the source of truth. Let's discuss
-  these approaches in detail.
+  the two different approaches in detail.
 
   Imagine a scenario where LiveView represents a board with each card in
   it as a separate component. Each card has a form that allows to update
@@ -181,7 +189,7 @@ defmodule Phoenix.LiveComponent do
 
   ### LiveView as the source of truth
 
-  If the LiveView is the source of truth, the LiveView will be responsible
+  If the LiveView is the source of truth, it will be responsible
   for fetching all of the cards in a board. Then it will call `live_component/3`
   for each card, passing the card struct as argument to CardComponent:
 
@@ -193,12 +201,12 @@ defmodule Phoenix.LiveComponent do
   card, `CardComponent.handle_event/3` will be triggered. However, if the
   update succeeds, you must not change the card struct inside the component.
   If you do so, the card struct in the component will get out of sync with
-  the LiveView. Since the LiveView is the source of truth, we should instead
-  tell the LiveView the card was updated.
+  the LiveView. Since the LiveView is the source of truth, you should instead
+  tell the LiveView that the card was updated.
 
   Luckily, because the component and the view run in the same process,
   sending a message from the component to the parent LiveView is as simple
-  as sending a message to self:
+  as sending a message to `self()`:
 
       defmodule CardComponent do
         ...
@@ -208,7 +216,7 @@ defmodule Phoenix.LiveComponent do
         end
       end
 
-  The LiveView can receive this event using `handle_info`:
+  The LiveView then receives this event using `handle_info`:
 
       defmodule BoardView do
         ...
@@ -242,7 +250,7 @@ defmodule Phoenix.LiveComponent do
 
   As long as the parent LiveView subscribes to the "board:ID" topic,
   it will receive updates. The advantage of using PubSub is that we get
-  distributed updates out of the box. Now if any user connected to the
+  distributed updates out of the box. Now, if any user connected to the
   board changes a card, all other users will see the change.
 
   ### LiveComponent as the source of truth
@@ -320,10 +328,10 @@ defmodule Phoenix.LiveComponent do
         {:ok, assign(socket, inner_content: inner_content)}
       end
 
-  The approach above is the preferred one when passing blocks to `do/end`.
+  The above approach is the preferred one when passing blocks to `do/end`.
   However, if you are outside of a .leex template and you want to invoke a
-  component passing `do/end` blocks, you will have to explicitly handle the
-  assigns by giving it a clause:
+  component passing a `do/end` block, you will have to explicitly handle the
+  assigns by giving it a `->` clause:
 
       live_component @socket, GridComponent, entries: @entries do
         new_assigns -> "New entry: " <> new_assigns[:entry]
@@ -337,9 +345,13 @@ defmodule Phoenix.LiveComponent do
 
   ## Limitations
 
+  ### Components require at least one HTML tag
+
   Components must only contain HTML tags at their root. At least one HTML
   tag must be present. It is not possible to have components that render
   only text or text mixed with tags at the root.
+
+  ### Change tracking requirement
 
   Another limitation of components is that they must always be change
   tracked. For example, if you render a component inside `form_for`, like
@@ -370,7 +382,46 @@ defmodule Phoenix.LiveComponent do
 
   In this case, the solution is to not use `content_tag` and rely on LiveEEx
   to build the markup.
+
+  ### SVG support
+
+  Given components compartmentalize markup on the server, they are also
+  rendered in isolation on the client, which provides great performance
+  benefits on the client too.
+
+  However, when rendering components on the client, the client needs to
+  choose the mime type of the component contents, which defaults to HTML.
+  This is the best default but in some cases it may lead to unexpected
+  results.
+
+  For example, if you are rendering SVG, the SVG will be interpreted as
+  HTML. This may work just fine for most components but you may run into
+  corner cases. For example, the `<image>` SVG tag may be rewritten to
+  the `<img>` tag, since `<image>` is an obsolete HTML tag.
+
+  Luckily, there is a solution to this problem. Since SVG allows `<svg>`
+  tags to be nested, you can wrap the component content into an `<svg>`
+  tag. This will ensure that it is correctly interpreted by the browser.
   """
+
+  defmodule CID do
+    @moduledoc """
+    The struct representing an internal unique reference to the component instance,
+    available as the `@myself` assign in stateful components.
+
+    Read more about the uses of `@myself` in the `Phoenix.LiveComponent` docs.
+    """
+
+    defstruct [:cid]
+
+    defimpl Phoenix.HTML.Safe do
+      def to_iodata(%{cid: cid}), do: Integer.to_string(cid)
+    end
+
+    defimpl String.Chars do
+      def to_string(%{cid: cid}), do: Integer.to_string(cid)
+    end
+  end
 
   alias Phoenix.LiveView.Socket
 
@@ -379,6 +430,8 @@ defmodule Phoenix.LiveComponent do
       import Phoenix.LiveView
       import Phoenix.LiveView.Helpers
       @behaviour Phoenix.LiveComponent
+
+      require Phoenix.LiveView.Renderer
       @before_compile Phoenix.LiveView.Renderer
 
       @doc false
@@ -402,7 +455,7 @@ defmodule Phoenix.LiveComponent do
               unsigned_params :: binary | Socket.unsigned_params(),
               socket :: Socket.t()
             ) ::
-              {:noreply, Socket.t()}
+              {:noreply, Socket.t()} | {:reply, map, Socket.t()}
 
   @optional_callbacks mount: 1, preload: 1, update: 2, handle_event: 3
 end

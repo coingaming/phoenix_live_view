@@ -1,30 +1,181 @@
 # Changelog
 
+## 0.14.4 (2020-07-30)
+
+### Bug fixes
+  - Fix hidden inputs throwing selection range error
+
+## 0.14.3 (2020-07-24)
+
+### Enhancements
+  - Support `render_layout` with LiveEEx
+
+### Bug fixes
+  - Fix focused inputs being overwritten by latent patch
+  - Fix LiveView error when `"_target"` input name contains array
+  - Fix change tracking when passing a do-block to components
+
+## 0.14.2 (2020-07-21)
+
+### Bug fixes
+  - Fix Map of assigns together with `@inner_content` causing `no function clause matching in Keyword.put/3` error
+  - Fix `LiveViewTest` failing to patch children properly for append/prepend based phx-update's
+  - Fix argument error when providing `:as` option to a `live` route
+  - Fix page becoming unresponsive when the server crashes while handling a live patch
+  - Fix empty diff causing pending data-ref based updates, such as classes and disable-with content to not be updated
+  - Fix bug where throttling keydown events would eat key presses
+  - Fix textarea's failing to be disabled on form submit
+  - Fix text node DOM memory leak when using phx-update append/prepend
+
+### Enhancements
+  - Allow `:router` to be given to `render_component`
+  - Display file on compile warning for `~L`
+  - Log error on client when using a hook without a DOM ID
+  - Optimize phx-update append/prepend based DOM updates
+
+## 0.14.1 (2020-07-09)
+
+### Bug fixes
+  - Fix nested `live_render`'s failing to be torn down when removed from the DOM in certain cases
+  - Fix LEEx issue for nested conditions failing to be re-evaluated
+
+## 0.14.0 (2020-07-07)
+
+### Bug fixes
+  - Fix IE11 issue where `document.activeElement` creates a null reference
+  - Fix setup and teardown of root views when explicitly calling `liveSocket.disconnect()` followed by `liveSocket.connect()`
+  - Fix `error_tag` failing to be displayed for non-text based inputs such as selects and checkboxes as the phx-no-feedback class was always applied
+  - Fix `phx-error` class being applied on `live_redirect`
+  - Properly handle Elixir's special variables, such as `__MODULE__`
+  - No longer set disconnected class during patch
+  - Track flash keys to fix back-to-back flashes from being discarded
+  - Properly handle empty component diffs in the client for cases where the component has already been removed on the server
+  - Make sure components in nested live views do not conflict
+  - Fix `phx-static` not being sent from the client for child views
+  - Do not fail when trying to delete a view that was already deleted
+  - Ensure `beforeDestroy` is called on hooks in children of a removed element
+
+### Enhancements
+  - Allow the whole component static subtree to be shared when the component already exists on the client
+  - Add telemetry events to `mount`, `handle_params`, and `handle_event`
+  - Add `push_event` for pushing events and data from the server to the client
+  - Add client `handleEvent` hook method for receiving events pushed from the server
+  - Add ability to receive a reply to a `pushEvent` from the server via `{:reply, map, socket}`
+  - Use event listener for popstate to avoid conflicting with user-defined popstate handlers
+  - Log error on client when rendering a component with no direct DOM children
+  - Make `assigns.myself` a struct to catch mistakes
+  - Log if component doesn't exist on `send_update`, raise if module is unavailable
+
+## 0.13.3 (2020-06-04)
+
+### Bug fixes
+  - Fix duplicate debounced events from being triggered on blur with timed debounce
+  - Fix client error when live_redirected'd route results in a redirect to a non-live route on the server
+  - Fix DOM siblings being removed when a rootless component is updated
+  - Fix debounced input failing to send last change when blurred via Tab, Meta, or other non-printable keys
+
+### Enhancements
+  - Add `dom` option to `LiveSocket` with `onBeforeElUpdated` callback for external client library support of broad DOM operations
+
+## 0.13.2 (2020-05-27)
+
+### Bug fixes
+  - Fix a bug where swapping a root template with components would cause the LiveView to crash
+
+## 0.13.1 (2020-05-26)
+
+### Bug fixes
+  - Fix forced page refresh when push_redirect from a live_redirect
+
+### Enhancements
+  - Optimize component diffs to avoid sending empty diffs
+  - Optimize components to share static values
+  - [LiveViewTest] Automatically synchronize before render events
+
+## 0.13.0 (2020-05-21)
+
+### Backwards incompatible changes
+  - No longer send event metadata by default. Metadata is now opt-in and user defined at the `LiveSocket` level.
+  To maintain backwards compatiblity with pre-0.13 behaviour, you can provide the following metadata option:
+
+  ```javascript
+  let liveSocket = new LiveSocket("/live", Socket, {
+    params: {_csrf_token: csrfToken},
+    metadata: {
+      click: (e, el) => {
+        return {
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          x: e.x || e.clientX,
+          y: e.y || e.clientY,
+          pageX: e.pageX,
+          pageY: e.pageY,
+          screenX: e.screenX,
+          screenY: e.screenY,
+          offsetX: e.offsetX,
+          offsetY: e.offsetY,
+          detail: e.detail || 1,
+        }
+      },
+      keydown: (e, el) => {
+        return {
+          altGraphKey: e.altGraphKey,
+          altKey: e.altKey,
+          code: e.code,
+          ctrlKey: e.ctrlKey,
+          key: e.key,
+          keyIdentifier: e.keyIdentifier,
+          keyLocation: e.keyLocation,
+          location: e.location,
+          metaKey: e.metaKey,
+          repeat: e.repeat,
+          shiftKey: e.shiftKey
+        }
+      }
+    }
+  })
+  ```
+
+### Bug fixes
+  - Fix error caused by Chrome sending a keydown event on native UI autocomplete without a `key`
+  - Fix server error when a live navigation request issues a redirect
+  - Fix double window bindings when explicit calls to LiveSocket connect/disconnect/connect
+
 ### Enhancements
   - Add `Phoenix.LiveView.get_connect_info/1`
   - Add `Phoenix.LiveViewTest.put_connect_info/2` and `Phoenix.LiveViewTest.put_connect_params/2`
+  - Add support for tracking static asset changes on the page across cold server deploys
+  - Add support for passing a `@myself` target to a hook's `pushEventTo` target
+  - Add configurable metadata for events with new `metadata` LiveSocket option
+  - Add `"_mounts"` key in connect params which specifies the number of times a LiveView has mounted
 
 ## 0.12.1 (2020-04-19)
 
 ### Bug fixes
-  - Fix component innerHTML being discarded when a sibling DOM element appears above it, in cases where the component lacks a DOM id
-  - Fix firefox reconnecting briefly during hard redirects
-  - Fix phx-disable-with and other pending attributes failing to be restored when an empty patch is returned by server
+  - Fix component `innerHTML` being discarded when a sibling DOM element appears above it, in cases where the component lacks a DOM ID
+  - Fix Firefox reconnecting briefly during hard redirects
+  - Fix `phx-disable-with` and other pending attributes failing to be restored when an empty patch is returned by server
   - Ensure LiveView module is loaded before mount to prevent first application request logging errors if the very first request is to a connected LiveView
 
 ## 0.12.0 (2020-04-16)
 
 This version of LiveView comes with an overhaul of the testing module, more closely integrating your LiveView template with your LiveView events. For example, in previous versions, you could write this test:
 
-    render_click(live_view, "increment_by", %{by: 1})
+  ```elixir
+  render_click(live_view, "increment_by", %{by: 1})
+  ```
 
 However, there is no guarantee that there is any element on the page with a `phx-click="increment"` attribute and `phx-value-by` set to 1. With LiveView 0.12.0, you can now write:
 
-    live_view
-    |> element("#term .buttons a", "Increment")
-    |> render_click()
+  ```elixir
+  live_view
+  |> element("#term .buttons a", "Increment")
+  |> render_click()
+  ```
 
-The new implementation will check there is a button at `#term .buttons a`, with "Increment" as text, validate that it has a "phx-click" attribute and automatically submit to it with all relevant `phx-value` entries. This brings us closer to integration/acceptance test frameworks without any of the overhead and complexities of running a headless browser.
+The new implementation will check there is a button at `#term .buttons a`, with "Increment" as text, validate that it has a `phx-click` attribute and automatically submit to it with all relevant `phx-value` entries. This brings us closer to integration/acceptance test frameworks without any of the overhead and complexities of running a headless browser.
 
 ### Enhancements
   - Add `assert_patch/3` and `assert_patched/2` for asserting on patches
@@ -32,9 +183,9 @@ The new implementation will check there is a button at `#term .buttons a`, with 
   - Add `phx-trigger-action` form annotation to trigger an HTTP form submit on next DOM patch
 
 ### Bug fixes
-  - Fix phx-target @myself targetting a sibling LiveView component with the same component ID
-  - Fix phx:page-loading-stop firing before the DOM patch has been performed
-  - Fix `phx-update=prepend` failing to properly patch the DOM when the same ID is updated back to back
+  - Fix `phx-target` `@myself` targetting a sibling LiveView component with the same component ID
+  - Fix `phx:page-loading-stop` firing before the DOM patch has been performed
+  - Fix `phx-update="prepend"` failing to properly patch the DOM when the same ID is updated back to back
   - Fix redirects on mount failing to copy flash
 
 ### Backwards incompatible changes
@@ -56,7 +207,7 @@ The new implementation will check there is a button at `#term .buttons a`, with 
     html = render_submit([view, "#component-id"], event, value)
     ```
 
-  In any case case, this API is deprecated and you should migrate to the new element based API.
+    In any case, this API is deprecated and you should migrate to the new element based API.
 
 ## 0.11.1 (2020-04-08)
 
@@ -68,28 +219,36 @@ The new implementation will check there is a button at `#term .buttons a`, with 
   - Track `unless` in LiveEEx engine
 
 ### Backwards incompatible changes
-  - `render_event`/`render_click` and friends now expect a DOM ID selector to be given when working with components. For example, instead of `render_click([live, "user-13"])`, you should write `render_click([live, "#user-13"])`, mirroring the `phx-target` API
+  - `render_event`/`render_click` and friends now expect a DOM ID selector to be given when working with components. For example, instead of `render_click([live, "user-13"])`, you should write `render_click([live, "#user-13"])`, mirroring the `phx-target` API.
   - Accessing the socket assigns directly `@socket.assigns[...]` in a template will now raise the exception `Phoenix.LiveView.Socket.AssignsNotInSocket`. The socket assigns are available directly inside the template as LiveEEx `assigns`, such as `@foo` and `@bar`. Any assign access should be done using the assigns in the template where proper change tracking takes place.
 
 ### Enhancements
   - Trigger debounced events immediately on input blur
-  - Support `defaults` option on `LiveSocket` constructor to configure default `phx-debounce` and `phx-throttle` values, allowing `<input .. phx-debounce />`
+  - Support `defaults` option on `LiveSocket` constructor to configure default `phx-debounce` and `phx-throttle` values, allowing `<input ... phx-debounce>`
   - Add `detail` key to click event metadata for detecting double/triple clicks
 
 ## 0.11.0 (2020-04-06)
 
 ### Backwards incompatible changes
-  - Remove socket.assigns during render to avoid change tracking bugs. If you were previously relying on passing `@socket` to functions then referencing socket assigns, pass the explicit assign instead to your functions from the template
-  - Removed `assets/css/live_view.css`. If you want to show a progress bar then in `app.css` replace `@import "../../../../deps/phoenix_live_view/assets/css/live_view.css";` with `@import "../node_modules/nprogress/nprogress.css";` and add `nprogress` to `assets/package.json`. Full details in the [Progress animation guide](https://hexdocs.pm/phoenix_live_view/0.11.0/installation.html#progress-animation)
+  - Remove `socket.assigns` during render to avoid change tracking bugs. If you were previously relying on passing `@socket` to functions then referencing socket assigns, pass the explicit assign instead to your functions from the template.
+  - Removed `assets/css/live_view.css`. If you want to show a progress bar then in `app.css`, replace
+
+
+    ```diff
+    - @import "../../../../deps/phoenix_live_view/assets/css/live_view.css";
+    + @import "../node_modules/nprogress/nprogress.css";
+    ```
+
+    and add `nprogress` to `assets/package.json`. Full details in the [Progress animation guide](https://hexdocs.pm/phoenix_live_view/0.11.0/installation.html#progress-animation)
 
 ### Bug fixes
   - Fix client issue with greater than two levels of LiveView nesting
   - Fix bug causing entire LiveView to be re-rendering with only a component changed
-  - Fix issue where rejoins would not trigger phx:page-loading-stop
+  - Fix issue where rejoins would not trigger `phx:page-loading-stop`
 
 ### Enhancements
   - Support deep change tracking so `@foo.bar` only executes and diffs when bar changes
-  - Add `@myself` assign, to allow components to target themselves instead of relying on a DOM id, for example: `phx-target="<%= @myself %>"`
+  - Add `@myself` assign, to allow components to target themselves instead of relying on a DOM ID, for example: `phx-target="<%= @myself %>"`
   - Optimize various client rendering scenarios for faster DOM patching
   of components and append/prepended content
   - Add `enableProfiling()` and `disableProfiling()` to `LiveSocket` for client performance profiling to aid the development process
@@ -105,7 +264,7 @@ The new implementation will check there is a button at `#term .buttons a`, with 
 
 ### Bug fixes
   - Fix loading states causing nested LiveViews to be removed during live navigation
-  - Only trigger `phx-update=ignore` hook if data attributes have changed
+  - Only trigger `phx-update="ignore"` hook if data attributes have changed
   - Fix LiveEEx fingerprint bug causing no diff to be sent in certain cases
 
 ### Enhancements
@@ -171,7 +330,7 @@ The new implementation will check there is a button at `#term .buttons a`, with 
 ## 0.7.1 (2020-02-13)
 
 ### Bug Fixes
-  - Fix checkbox bug failing to send phx-change event to the server in certain cases
+  - Fix checkbox bug failing to send `phx-change` event to the server in certain cases
   - Fix checkbox bug failing to maintain checked state when a checkbox is programmatically updated by the server
   - Fix select bug in Firefox causing the highlighted index to jump when a patch is applied during hover state
 

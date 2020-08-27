@@ -15,7 +15,8 @@ defmodule Phoenix.LiveViewUnitTest do
             },
             %{connect_params: %{}, connect_info: %{}},
             nil,
-            %{}
+            %{},
+            URI.parse("https://www.example.com")
           )
 
   describe "flash" do
@@ -167,7 +168,7 @@ defmodule Phoenix.LiveViewUnitTest do
     defp static_changed?(client, latest) do
       socket = %{@socket | connected?: true}
       Process.put(:cache_static_manifest_latest, latest)
-      socket = put_in(socket.private.connect_params["_cache_static_manifest_latest"], client)
+      socket = put_in(socket.private.connect_params["_track_static"], client)
       static_changed?(socket)
     end
   end

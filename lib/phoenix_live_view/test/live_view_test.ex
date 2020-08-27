@@ -17,7 +17,8 @@ defmodule Phoenix.LiveViewTest do
   socket state, and the view continues statefully. The LiveView test functions
   support testing both disconnected and connected mounts separately, for example:
 
-      use Phoenix.ConnTest
+      import Plug.Conn
+      import Phoenix.ConnTest
       import Phoenix.LiveViewTest
       @endpoint MyEndpoint
 
@@ -54,26 +55,29 @@ defmodule Phoenix.LiveViewTest do
   browser and assert on the rendered side effect of the event, use the
   `render_*` functions:
 
-    * `render_click/1` - sends a phx-click event and value and
-      returns the rendered result of the `handle_event/3` callback.
+    * `render_click/1` - sends a phx-click event and value, returning
+      the rendered result of the `handle_event/3` callback.
 
-    * `render_focus/2` - sends a phx-focus event and value and
-      returns the rendered result of the `handle_event/3` callback.
+    * `render_focus/2` - sends a phx-focus event and value, returning
+      the rendered result of the `handle_event/3` callback.
 
-    * `render_blur/1` - sends a phx-blur event and value and
-      returns the rendered result of the `handle_event/3` callback.
+    * `render_blur/1` - sends a phx-blur event and value, returning
+      the rendered result of the `handle_event/3` callback.
 
-    * `render_submit/1` - sends a form phx-submit event and value and
-      returns the rendered result of the `handle_event/3` callback.
+    * `render_submit/1` - sends a form phx-submit event and value, returning
+      the rendered result of the `handle_event/3` callback.
 
-    * `render_change/1` - sends a form phx-change event and value and
-      returns the rendered result of the `handle_event/3` callback.
+    * `render_change/1` - sends a form phx-change event and value, returning
+      the rendered result of the `handle_event/3` callback.
 
-    * `render_keydown/1` - sends a form phx-keydown event and value and
-      returns the rendered result of the `handle_event/3` callback.
+    * `render_keydown/1` - sends a form phx-keydown event and value, returning
+      the rendered result of the `handle_event/3` callback.
 
-    * `render_keyup/1` - sends a form phx-keyup event and value and
-      returns the rendered result of the `handle_event/3` callback.
+    * `render_keyup/1` - sends a form phx-keyup event and value, returning
+      the rendered result of the `handle_event/3` callback.
+
+    * `render_hook/3` - sends a hook event and value, returning
+      the rendered result of the `handle_event/3` callback.
 
   For example:
 
@@ -98,7 +102,7 @@ defmodule Phoenix.LiveViewTest do
   messages, simply message the view and use the `render` function to test the
   result:
 
-      send(view.pid, {:set_temp: 50})
+      send(view.pid, {:set_temp, 50})
       assert render(view) =~ "The temperature is: 50℉"
 
   ## Testing components
@@ -261,27 +265,50 @@ defmodule Phoenix.LiveViewTest do
     connect_from_static_token(conn, path)
   end
 
+  defp connect_from_static_token(
+         %Plug.Conn{status: 200, assigns: %{live_module: live_module}} = conn,
+         path
+       ) do
+    DOM.ensure_loaded!()
+    html = Phoenix.ConnTest.html_response(conn, 200)
+    endpoint = Phoenix.Controller.endpoint_module(conn)
+    ref = make_ref()
+
+    opts = %{
+      caller: {self(), ref},
+      html: html,
+      connect_params: conn.private[:live_view_connect_params] || %{},
+      connect_info: conn.private[:live_view_connect_info] || %{},
+      live_module: live_module,
+      endpoint: endpoint,
+      session: maybe_get_session(conn),
+      url: mount_url(endpoint, path),
+      test_supervisor: fetch_test_supervisor!()
+    }
+
+    case ClientProxy.start_link(opts) do
+      {:ok, _} ->
+        receive do
+          {^ref, {:ok, view, html}} -> {:ok, view, html}
+        end
+
+      {:error, reason} ->
+        exit({reason, {__MODULE__, :live, [path]}})
+
+      :ignore ->
+        receive do
+          {^ref, {:error, reason}} -> {:error, reason}
+        end
+    end
+  end
+
+  defp connect_from_static_token(%Plug.Conn{status: 200}, _path) do
+    {:error, :nosession}
+  end
+
   defp connect_from_static_token(%Plug.Conn{status: redir} = conn, _path)
        when redir in [301, 302] do
     error_redirect_conn(conn)
-  end
-
-  defp connect_from_static_token(%Plug.Conn{status: 200} = conn, path) do
-    DOM.ensure_loaded!()
-
-    html =
-      conn
-      |> Phoenix.ConnTest.html_response(200)
-      |> IO.iodata_to_binary()
-      |> DOM.parse()
-
-    case DOM.find_live_views(html) do
-      [{id, session_token, static_token} | _] ->
-        do_connect(conn, path, html, session_token, static_token, id)
-
-      [] ->
-        {:error, :nosession}
-    end
   end
 
   defp error_redirect_conn(conn) do
@@ -301,44 +328,20 @@ defmodule Phoenix.LiveViewTest do
   defp error_redirect_key(%{private: %{phoenix_live_redirect: true}}), do: :live_redirect
   defp error_redirect_key(_), do: :redirect
 
-  defp do_connect(%Plug.Conn{} = conn, path, html, session_token, static_token, id) do
-    child_statics = Map.delete(DOM.find_static_views(html), id)
-    endpoint = Phoenix.Controller.endpoint_module(conn)
+  # TODO: replace with ExUnit.Case.fetch_test_supervisor!() when we require Elixir v1.11.
+  defp fetch_test_supervisor!() do
+    case ExUnit.OnExitHandler.get_supervisor(self()) do
+      {:ok, nil} ->
+        opts = [strategy: :one_for_one, max_restarts: 1_000_000, max_seconds: 1]
+        {:ok, sup} = Supervisor.start_link([], opts)
+        ExUnit.OnExitHandler.put_supervisor(self(), sup)
+        sup
 
-    %ClientProxy{ref: ref} =
-      proxy =
-      ClientProxy.build(
-        id: id,
-        connect_params: conn.private[:live_view_connect_params] || %{},
-        connect_info: conn.private[:live_view_connect_info] || %{},
-        session_token: session_token,
-        static_token: static_token,
-        module: conn.assigns.live_module,
-        endpoint: endpoint,
-        child_statics: child_statics
-      )
+      {:ok, sup} ->
+        sup
 
-    opts = [
-      caller: {self(), ref},
-      html: html,
-      proxy: proxy,
-      session: maybe_get_session(conn),
-      url: mount_url(endpoint, path)
-    ]
-
-    case ClientProxy.start_link(opts) do
-      {:ok, _} ->
-        receive do
-          {^ref, {:ok, view, html}} -> {:ok, view, html}
-        end
-
-      {:error, reason} ->
-        exit({reason, {__MODULE__, :live, [path]}})
-
-      :ignore ->
-        receive do
-          {^ref, {:error, reason}} -> {:error, reason}
-        end
+      :error ->
+        raise ArgumentError, "fetch_test_supervisor!/0 can only be invoked from the test process"
     end
   end
 
@@ -371,8 +374,11 @@ defmodule Phoenix.LiveViewTest do
       assert render_component(MyComponent, id: 123, user: %User{}) =~
                "some markup in component"
 
+      assert render_component(MyComponent, %{id: 123, user: %User{}}, router: SomeRouter) =~
+               "some markup in component"
+
   """
-  defmacro render_component(component, assigns) do
+  defmacro render_component(component, assigns, opts \\ []) do
     endpoint =
       Module.get_attribute(__CALLER__.module, :endpoint) ||
         raise ArgumentError,
@@ -382,16 +388,17 @@ defmodule Phoenix.LiveViewTest do
       Phoenix.LiveViewTest.__render_component__(
         unquote(endpoint),
         unquote(component),
-        unquote(assigns)
+        unquote(assigns),
+        unquote(opts)
       )
     end
   end
 
   @doc false
-  def __render_component__(endpoint, component, assigns) do
-    socket = %Socket{endpoint: endpoint}
+  def __render_component__(endpoint, component, assigns, opts) do
+    socket = %Socket{endpoint: endpoint, router: opts[:router]}
     assigns = Map.new(assigns)
-    mount_assigns = if assigns[:id], do: %{myself: -1}, else: %{}
+    mount_assigns = if assigns[:id], do: %{myself: %Phoenix.LiveComponent.CID{cid: -1}}, else: %{}
     rendered = Diff.component_to_rendered(socket, component, assigns, mount_assigns)
     {_, diff, _} = Diff.render(socket, rendered, Diff.new_components())
     diff |> Diff.to_iodata() |> IO.iodata_to_binary()
@@ -457,8 +464,8 @@ defmodule Phoenix.LiveViewTest do
   element on the page with a `phx-submit` attribute in it. The event name
   given set on `phx-submit` is then sent to the appropriate LiveView
   (or component if `phx-target` is set accordingly). All `phx-value-*`
-  entries in the element are sent as values. Extra values can be given
-  with the `value` argument.
+  entries in the element are sent as values. Extra values, including hidden
+  input fields, can be given with the `value` argument.
 
   It returns the contents of the whole LiveView or an `{:error, redirect}`
   tuple.
@@ -470,6 +477,13 @@ defmodule Phoenix.LiveViewTest do
       assert view
              |> element("form")
              |> render_submit(%{deg: 123}) =~ "123 exceeds limits"
+
+  To submit a form along with some with hidden input values:
+
+      assert view
+            |> form("#term", user: %{name: "hello"})
+            |> render_submit(%{"hidden_value" => "example"}) =~ "Name updated"
+
   """
   def render_submit(element, value \\ %{})
   def render_submit(%Element{} = element, value), do: render_event(element, :submit, value)
@@ -488,7 +502,7 @@ defmodule Phoenix.LiveViewTest do
       assert render_submit(view, :refresh, %{deg: 32}) =~ "The temp is: 32℉"
   """
   def render_submit(view, event, value) do
-    render_event(view, :form, event, value)
+    render_event(view, :submit, event, value)
   end
 
   @doc """
@@ -520,6 +534,13 @@ defmodule Phoenix.LiveViewTest do
       assert view
              |> element("form")
              |> render_change(%{_target: ["deg"], deg: 123}) =~ "123 exceeds limits"
+
+  As with `render_submit/2`, hidden input field values can be provided like so:
+
+      refute view
+            |> form("#term", user: %{name: "hello"})
+            |> render_change(%{"hidden_value" => "example"}) =~ "can't be blank"
+
   """
   def render_change(element, value \\ %{})
   def render_change(%Element{} = element, value), do: render_event(element, :change, value)
@@ -538,7 +559,7 @@ defmodule Phoenix.LiveViewTest do
       assert render_change(view, :validate, %{deg: 123}) =~ "123 exceeds limits"
   """
   def render_change(view, event, value) do
-    render_event(view, :form, event, value)
+    render_event(view, :change, event, value)
   end
 
   @doc """
@@ -711,7 +732,7 @@ defmodule Phoenix.LiveViewTest do
   end
 
   @doc """
-  Sends a hook event to the view and returns the rendered result.
+  Sends a hook event to the view or an element and returns the rendered result.
 
   It returns the contents of the whole LiveView or an `{:error, redirect}`
   tuple.
@@ -721,6 +742,16 @@ defmodule Phoenix.LiveViewTest do
       {:ok, view, html} = live(conn, "/thermo")
       assert html =~ "The temp is: 30℉"
       assert render_hook(view, :refresh, %{deg: 32}) =~ "The temp is: 32℉"
+
+  If you are pushing events from a hook to a component, then you must pass
+  an `element`, created with `element/3`, as first argument and it must point
+  to a single element on the page with a `phx-target` attribute in it:
+
+      {:ok, view, _html} = live(conn, "/thermo")
+      assert view
+             |> element("#thermo-component")
+             |> render_hook(:refresh, %{deg: 32}) =~ "The temp is: 32℉"
+
   """
   def render_hook(view_or_element, event, value \\ %{})
 
@@ -738,18 +769,6 @@ defmodule Phoenix.LiveViewTest do
 
   defp render_event(%View{} = view, type, event, value) when is_map(value) or is_list(value) do
     call(view, {:render_event, {proxy_topic(view), to_string(event)}, type, value})
-  end
-
-  # TODO: Deprecate me
-  defp render_event([%View{} = view | path], type, event, value)
-       when is_map(value) or is_list(value) do
-    IO.warn(
-      "passing a view plus the path #{inspect(path)} is deprecated on tests. " <>
-        "See the new element/form API instead"
-    )
-
-    element = %{element(view, Enum.join(path, " ")) | event: to_string(event)}
-    call(view, {:render_event, element, type, value})
   end
 
   @doc """
@@ -798,7 +817,7 @@ defmodule Phoenix.LiveViewTest do
 
   """
   def has_element?(%Element{} = element) do
-    call(element, {:render, :has_element?, element})
+    call(element, {:render_element, :has_element?, element})
   end
 
   @doc """
@@ -831,20 +850,15 @@ defmodule Phoenix.LiveViewTest do
              |> render() == "Snooze"
   """
   def render(%View{} = view) do
-    render(view, proxy_topic(view))
+    render(view, {proxy_topic(view), "render"})
   end
 
   def render(%Element{} = element) do
     render(element, element)
   end
 
-  def render([%View{} = view | path]) do
-    IO.warn("invoking render/1 with a path is deprecated, pass a live_view or an element instead")
-    render(view, element(view, Path.join(path, " ")))
-  end
-
   defp render(view_or_element, topic_or_element) do
-    call(view_or_element, {:render, :find_element, topic_or_element}) |> DOM.to_html()
+    call(view_or_element, {:render_element, :find_element, topic_or_element}) |> DOM.to_html()
   end
 
   defp call(view_or_element, tuple) do
@@ -896,13 +910,31 @@ defmodule Phoenix.LiveViewTest do
   make sure the data you are changing/submitting actually exists, failing
   otherwise.
 
+  ## Examples
+
       assert view
             |> form("#term", user: %{name: "hello"})
             |> render_submit() =~ "Name updated"
 
+  This function is meant to mimic what the user can actually do, so you cannot
+   set hidden input values. However, hidden values can be given when calling
+   `render_submit/2` or `render_change/2`, see their docs for examples.
   """
   def form(%View{proxy: proxy}, selector, form_data \\ %{}) when is_binary(selector) do
     %Element{proxy: proxy, selector: selector, form_data: form_data}
+  end
+
+  @doc """
+  Returns the most recent title that was updated via a `page_title` assign.
+
+  ## Examples
+
+      render_click(view, :event_that_triggers_page_title_update)
+      assert page_title(view) =~ "my title"
+
+  """
+  def page_title(view) do
+    call(view, :page_title)
   end
 
   @doc """
@@ -997,6 +1029,36 @@ defmodule Phoenix.LiveViewTest do
         flush_navigation(ref, topic, {kind, to})
     after
       0 -> last
+    end
+  end
+
+  @doc """
+  Asserts an event will be pushed within `timeout`.
+
+  ## Examples
+
+      assert_push_event view, "scores", %{points: 100, user: "josé"}
+  """
+  defmacro assert_push_event(view, event, payload, timeout \\ 100) do
+    quote do
+      %{proxy: {ref, _topic, _}} = unquote(view)
+
+      assert_receive {^ref, {:push_event, unquote(event), unquote(payload)}}, unquote(timeout)
+    end
+  end
+
+  @doc """
+  Asserts a hook reply was returned from a `handle_event` callback.
+
+  ## Examples
+
+      assert_reply view, "charge", %{amount: 100}, %{result: "ok", transaction_id: _}
+  """
+  defmacro assert_reply(view, payload, timeout \\ 100) do
+    quote do
+      %{proxy: {ref, _topic, _}} = unquote(view)
+
+      assert_receive {^ref, {:reply, unquote(payload)}}, unquote(timeout)
     end
   end
 

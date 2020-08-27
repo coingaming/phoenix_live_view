@@ -108,6 +108,7 @@ defmodule Phoenix.LiveView.Static do
     endpoint = Phoenix.Controller.endpoint_module(conn)
     flash = Map.get(conn.private, :phoenix_flash, %{})
     request_url = Plug.Conn.request_url(conn)
+    host_uri = URI.parse(request_url)
 
     socket =
       Utils.configure_socket(
@@ -119,7 +120,8 @@ defmodule Phoenix.LiveView.Static do
           conn_session: conn_session
         },
         action,
-        flash
+        flash,
+        host_uri
       )
 
     case call_mount_and_handle_params!(socket, view, mount_session, conn.params, request_url) do
@@ -165,13 +167,15 @@ defmodule Phoenix.LiveView.Static do
     action = Keyword.get(opts, :action)
     endpoint = Phoenix.Controller.endpoint_module(conn)
     flash = Map.get(conn.private, :phoenix_flash, %{})
+    host_uri = conn |> Plug.Conn.request_url() |> URI.parse()
 
     socket =
       Utils.configure_socket(
         %Socket{endpoint: endpoint, view: view, root_view: view},
         %{assign_new: {conn.assigns, []}, connect_params: %{}, connect_info: %{}},
         action,
-        flash
+        flash,
+        host_uri
       )
 
     session_token = sign_root_session(socket, router, view, to_sign_session)
@@ -216,9 +220,10 @@ defmodule Phoenix.LiveView.Static do
           parent_pid: self(),
           router: parent.router
         },
-        %{assign_new: {parent.assigns, []}, phoenix_live_layout: false},
+        %{assign_new: {parent.assigns.__assigns__, []}, phoenix_live_layout: false},
         nil,
-        %{}
+        %{},
+        parent.host_uri
       )
 
     if connected? do
@@ -236,7 +241,7 @@ defmodule Phoenix.LiveView.Static do
     socket = put_in(socket.private[:conn_session], conn_session)
 
     socket =
-      Utils.maybe_call_mount!(socket, view, [:not_mounted_at_router, mount_session, socket])
+      Utils.maybe_call_live_view_mount!(socket, view, :not_mounted_at_router, mount_session)
 
     if redir = socket.redirected do
       throw({:phoenix, :child_redirect, redir, Utils.get_flash(socket)})
@@ -294,7 +299,7 @@ defmodule Phoenix.LiveView.Static do
     mount_params = if socket.router, do: params, else: :not_mounted_at_router
 
     socket
-    |> Utils.maybe_call_mount!(view, [mount_params, session, socket])
+    |> Utils.maybe_call_live_view_mount!(view, mount_params, session)
     |> mount_handle_params(view, params, uri)
     |> case do
       {:noreply, %Socket{redirected: {:live, _, _}} = socket} ->
@@ -305,13 +310,6 @@ defmodule Phoenix.LiveView.Static do
 
       {:noreply, %Socket{redirected: nil} = new_socket} ->
         {:ok, new_socket}
-
-      other ->
-        raise ArgumentError, """
-        invalid result returned from #{inspect(view)}.handle_params/3.
-
-        Expected {:noreply, socket}, got: #{inspect(other)}
-        """
     end
   end
 
@@ -328,7 +326,7 @@ defmodule Phoenix.LiveView.Static do
         Utils.live_link_info!(socket, view, uri)
 
       true ->
-        view.handle_params(params, uri, socket)
+        Utils.call_handle_params!(socket, view, params, uri)
     end
   end
 
