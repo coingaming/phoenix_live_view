@@ -8,7 +8,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
   import Phoenix.LiveView.TelemetryTestHelpers
   alias Phoenix.LiveView
   alias Phoenix.LiveView.Socket
-  alias Phoenix.LiveViewTest.{Endpoint, DOM, ClockLive, ClockControlsLive, NestedLive}
+  alias Phoenix.LiveViewTest.{Endpoint, DOM, ClockLive, ClockControlsLive, LiveInComponent}
 
   @endpoint Endpoint
   @moduletag :capture_log
@@ -203,6 +203,20 @@ defmodule Phoenix.LiveView.LiveViewTest do
       assert {:error, {:redirect, %{to: "/thermo"}}} = live(conn)
     end
 
+    test "external redirect when disconnected", %{conn: conn} do
+      conn = get(conn, "/redir?during=disconnected&kind=external&to=https://phoenixframework.org")
+      assert redirected_to(conn) == "https://phoenixframework.org"
+
+      {:error, {:redirect, %{to: "https://phoenixframework.org"}}} =
+        live(conn, "/redir?during=disconnected&kind=external&to=https://phoenixframework.org")
+    end
+
+    test "external redirect when connected", %{conn: conn} do
+      conn = get(conn, "/redir?during=connected&kind=external&to=https://phoenixframework.org")
+      assert html_response(conn, 200) =~ "parent_content"
+      assert {:error, {:redirect, %{to: "https://phoenixframework.org"}}} = live(conn)
+    end
+
     test "child push_redirect when disconnected", %{conn: conn} do
       conn = get(conn, "/redir?during=disconnected&kind=push_redirect&child_to=/thermo")
       assert redirected_to(conn) == "/thermo"
@@ -246,6 +260,29 @@ defmodule Phoenix.LiveView.LiveViewTest do
       conn = get(conn, "/redir?during=connected&kind=redirect&child_to=/thermo?from_child=true")
       assert html_response(conn, 200) =~ "parent_content"
       assert {:error, {:redirect, %{to: "/thermo?from_child=true"}}} = live(conn)
+    end
+
+    test "child external redirect when disconnected", %{conn: conn} do
+      conn =
+        get(
+          conn,
+          "/redir?during=disconnected&kind=external&child_to=https://phoenixframework.org?from_child=true"
+        )
+
+      assert redirected_to(conn) == "https://phoenixframework.org?from_child=true"
+    end
+
+    test "child external redirect when connected", %{conn: conn} do
+      conn =
+        get(
+          conn,
+          "/redir?during=connected&kind=external&child_to=https://phoenixframework.org?from_child=true"
+        )
+
+      assert html_response(conn, 200) =~ "parent_content"
+
+      assert {:error, {:redirect, %{to: "https://phoenixframework.org?from_child=true"}}} =
+               live(conn)
     end
   end
 
@@ -674,7 +711,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
     end
 
     test "live view nested inside a live component" do
-      assert {:ok, _view, _html} = live_isolated(build_conn(), NestedLive)
+      assert {:ok, _view, _html} = live_isolated(build_conn(), LiveInComponent.Root)
     end
 
     @tag session: %{nest: []}
@@ -714,7 +751,7 @@ defmodule Phoenix.LiveView.LiveViewTest do
     end
 
     @tag session: %{nest: []}
-    test "redirect", %{conn: conn} do
+    test "redirect from child", %{conn: conn} do
       {:ok, thermo_view, html} = live(conn, "/thermo")
       assert html =~ "Redirect: none"
 
@@ -729,6 +766,24 @@ defmodule Phoenix.LiveView.LiveViewTest do
       )
 
       assert_redirect(thermo_view, "/thermo?redirect=redirect")
+    end
+
+    @tag session: %{nest: []}
+    test "external redirect from child", %{conn: conn} do
+      {:ok, thermo_view, html} = live(conn, "/thermo")
+      assert html =~ "Redirect: none"
+
+      assert clock_view = find_live_child(thermo_view, "clock")
+
+      send(
+        clock_view.pid,
+        {:run,
+         fn socket ->
+           {:noreply, LiveView.redirect(socket, external: "https://phoenixframework.org")}
+         end}
+      )
+
+      assert_redirect(thermo_view, "https://phoenixframework.org")
     end
   end
 

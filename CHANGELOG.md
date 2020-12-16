@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.14.8 (2020-10-30)
+
+### Bug fixes
+  - Fix compatiblity with latest Plug
+
+## 0.14.7
+
+### Bug fixes
+  - Fix `redirect(socket, external: ...)` when returned from an event
+  - Properly follow location hashes on live patch/redirect
+  - Fix failure in `Phoenix.LiveViewTest` when phx-update has non-HTML nodes as children
+  - Fix `phx_trigger_action` submitting the form before the DOM updates are complete
+
+## 0.14.6 (2020-09-21)
+
+### Bug fixes
+  - Fix race condition on `phx-trigger-action` causing reconnects before server form submit
+
+## 0.14.5 (2020-09-20)
+
+### Enhancements
+
+  - Optimize DOM prepend and append operations
+  - Add `Phoenix.LiveView.send_update_after/3`
+
+### Bug fixes
+  - Fix scroll position when using back/forward with `live_redirect`'s
+  - Handle recursive components when generating diffs
+  - Support hard redirects on mount
+  - Properly track nested components on deletion on `Phoenix.LiveViewTest`
+
 ## 0.14.4 (2020-07-30)
 
 ### Bug fixes

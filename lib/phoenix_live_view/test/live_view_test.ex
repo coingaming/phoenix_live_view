@@ -30,7 +30,7 @@ defmodule Phoenix.LiveViewTest do
       end
 
       test "redirected mount", %{conn: conn} do
-        assert {:error, %{redirect: %{to: "/somewhere"}}} = live(conn, "my-path")
+        assert {:error, {:redirect, %{to: "/somewhere"}}} = live(conn, "my-path")
       end
 
   Here, we start by using the familiar `Phoenix.ConnTest` function, `get/2` to
@@ -482,7 +482,7 @@ defmodule Phoenix.LiveViewTest do
 
       assert view
             |> form("#term", user: %{name: "hello"})
-            |> render_submit(%{"hidden_value" => "example"}) =~ "Name updated"
+            |> render_submit(%{user: %{"hidden_field" => "example"}}) =~ "Name updated"
 
   """
   def render_submit(element, value \\ %{})
@@ -539,7 +539,7 @@ defmodule Phoenix.LiveViewTest do
 
       refute view
             |> form("#term", user: %{name: "hello"})
-            |> render_change(%{"hidden_value" => "example"}) =~ "can't be blank"
+            |> render_change(%{user: %{"hidden_field" => "example"}}) =~ "can't be blank"
 
   """
   def render_change(element, value \\ %{})
@@ -799,7 +799,7 @@ defmodule Phoenix.LiveViewTest do
   ## Examples
 
       {:ok, view, _html} = live(conn, "/thermo")
-      assert clock_view = find_live_child(view, "#clock")
+      assert clock_view = find_live_child(view, "clock")
       assert render_click(clock_view, :snooze) =~ "snoozing"
   """
   def find_live_child(%View{} = parent, child_id) do
@@ -1052,7 +1052,7 @@ defmodule Phoenix.LiveViewTest do
 
   ## Examples
 
-      assert_reply view, "charge", %{amount: 100}, %{result: "ok", transaction_id: _}
+      assert_reply view, %{result: "ok", transaction_id: _}
   """
   defmacro assert_reply(view, payload, timeout \\ 100) do
     quote do

@@ -570,14 +570,14 @@ defmodule Phoenix.LiveView do
   @doc """
   Adds key value pairs to socket assigns.
 
-  A single key value pair may be passed, or a keyword list
-  of assigns may be provided to be merged into existing
-  socket assigns.
+  A single key value pair may be passed, or a keyword list or a map
+  of assigns may be provided to be merged into existing socket assigns.
 
   ## Examples
 
       iex> assign(socket, :name, "Elixir")
       iex> assign(socket, name: "Elixir", logo: "💧")
+      iex> assign(socket, %{name: "Elixir"})
   """
   def assign(%Socket{} = socket, key, value) do
     validate_assign_key!(key)
@@ -621,7 +621,7 @@ defmodule Phoenix.LiveView do
   end
 
   @doc """
-  Adds a flash message to the socket to be displayed on redirect.
+  Adds a flash message to the socket to be displayed.
 
   *Note*: While you can use `put_flash/3` inside a `Phoenix.LiveComponent`,
   components have their own `@flash` assigns. The `@flash` assign
@@ -690,15 +690,17 @@ defmodule Phoenix.LiveView do
     * `:to` - the path to redirect to. It must always be a local path
     * `:external` - an external path to redirect to
   """
-  def redirect(%Socket{} = socket, opts) do
-    url =
-      cond do
-        to = opts[:to] -> validate_local_url!(to, "redirect/2")
-        external = opts[:external] -> external
-        true -> raise ArgumentError, "expected :to or :external option in redirect/2"
-      end
-
+  def redirect(%Socket{} = socket, to: url) do
+    validate_local_url!(url, "redirect/2")
     put_redirect(socket, {:redirect, %{to: url}})
+  end
+
+  def redirect(%Socket{} = socket, external: url) do
+    put_redirect(socket, {:redirect, %{external: url}})
+  end
+
+  def redirect(%Socket{}, _) do
+    raise ArgumentError, "expected :to or :external option in redirect/2"
   end
 
   @doc """
@@ -895,12 +897,12 @@ defmodule Phoenix.LiveView do
   assign on mount:
 
       def mount(params, session, socket) do
-        {:ok, assign(socket, static_changed?: static_changed?(socket))}
+        {:ok, assign(socket, static_change: static_changed?(socket))}
       end
 
   And then in your views:
 
-      <%= if @static_change do %>
+      <%= if @static_changed? do %>
         <div id="reload-static">
           The app has been updated. Click here to <a href="#" onclick="window.location.reload()">reload</a>.
         </div>
@@ -993,7 +995,7 @@ defmodule Phoenix.LiveView do
         {:noreply, socket}
       end
   """
-  def send_update(module, assigns) do
+  def send_update(module, assigns) when is_atom(module) do
     assigns = Enum.into(assigns, %{})
 
     id =
@@ -1001,6 +1003,28 @@ defmodule Phoenix.LiveView do
         raise ArgumentError, "missing required :id in send_update. Got: #{inspect(assigns)}"
 
     Phoenix.LiveView.Channel.send_update(module, id, assigns)
+  end
+
+  @doc """
+  Similar to `send_update/2` but the update will be delayed according to the given `time_in_milliseconds`.
+
+  ## Examples
+
+      def handle_event("cancel-order", _, socket) do
+        ...
+        send_update_after(Cart, [id: "cart", status: "cancelled"], 3000)
+        {:noreply, socket}
+      end
+  """
+  def send_update_after(module, assigns, time_in_milliseconds)
+      when is_atom(module) and is_integer(time_in_milliseconds) do
+    assigns = Enum.into(assigns, %{})
+
+    id =
+      assigns[:id] ||
+        raise ArgumentError, "missing required :id in send_update_after. Got: #{inspect(assigns)}"
+
+    Phoenix.LiveView.Channel.send_update_after(module, id, assigns, time_in_milliseconds)
   end
 
   @doc """

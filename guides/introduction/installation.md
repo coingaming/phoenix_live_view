@@ -13,8 +13,8 @@ If installing from Hex, use the latest version from there:
 ```elixir
 def deps do
   [
-    {:phoenix_live_view, "~> 0.14.2"},
-    {:floki, ">= 0.0.0", only: :test}
+    {:phoenix_live_view, "~> 0.14.8"},
+    {:floki, ">= 0.27.0", only: :test}
   ]
 end
 ```
@@ -25,7 +25,7 @@ If you want the latest features, install from GitHub:
 def deps do
   [
     {:phoenix_live_view, github: "phoenixframework/phoenix_live_view"},
-    {:floki, ">= 0.0.0", only: :test}
+    {:floki, ">= 0.27.0", only: :test}
   ]
 ```
 
@@ -312,3 +312,7 @@ import NProgress from "nprogress"
 window.addEventListener("phx:page-loading-start", info => NProgress.start())
 window.addEventListener("phx:page-loading-stop", info => NProgress.done())
 ```
+
+## Location for LiveView modules
+
+By convention your LiveView modules and `leex` templates should be placed in `lib/my_web_app/live/` directory.

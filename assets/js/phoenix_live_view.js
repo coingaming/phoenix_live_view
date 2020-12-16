@@ -686,6 +686,7 @@ export class LiveSocket {
 
   bindTopLevelEvents(){
     if(this.boundTopLevelEvents){ return }
+
     this.boundTopLevelEvents = true
     window.addEventListener("pageshow", e => {
       if(e.persisted){ // reload page if being restored from back/forward cache
@@ -794,9 +795,17 @@ export class LiveSocket {
 
   bindNav(){
     if(!Browser.canPushState()){ return }
+    if(history.scrollRestoration){ history.scrollRestoration = "manual" }
+    let scrollTimer = null
+    window.addEventListener("scroll", e => {
+      clearTimeout(scrollTimer)
+      scrollTimer = setTimeout(() => {
+        Browser.updateCurrentState(state => Object.assign(state, {scroll: window.scrollY}))
+      }, 100)
+    })
     window.addEventListener("popstate", event => {
       if(!this.registerNewLocation(window.location)){ return }
-      let {type, id, root} = event.state || {}
+      let {type, id, root, scroll} = event.state || {}
       let href = window.location.href
 
       if(this.main.isConnected() && (type === "patch" && id  === this.main.id)){
@@ -804,6 +813,11 @@ export class LiveSocket {
       } else {
         this.replaceMain(href, null, () => {
           if(root){ this.replaceRootHistory() }
+          if(typeof(scroll) === "number"){
+            setTimeout(() => {
+              window.scrollTo(0, scroll)
+            }, 0) // the body needs to render before we scroll.
+          }
         })
       }
     }, false)
@@ -848,9 +862,10 @@ export class LiveSocket {
   }
 
   historyRedirect(href, linkState, flash){
+    let scroll = window.scrollY
     this.withPageLoading({to: href, kind: "redirect"}, done => {
       this.replaceMain(href, flash, () => {
-        Browser.pushState(linkState, {type: "redirect", id: this.main.id}, href)
+        Browser.pushState(linkState, {type: "redirect", id: this.main.id, scroll: scroll}, href)
         this.registerNewLocation(window.location)
         done()
       })
@@ -976,9 +991,21 @@ export let Browser = {
     req.send()
   },
 
+  updateCurrentState(callback){ if(!this.canPushState()){ return }
+    history.replaceState(callback(history.state || {}), "", window.location.href)
+  },
+
   pushState(kind, meta, to){
     if(this.canPushState()){
       if(to !== window.location.href){
+        if(meta.type == "redirect" && meta.scroll) {
+          // If we're redirecting store the current scrollY for the current history state.
+          let currentState = history.state || {}
+          currentState.scroll = meta.scroll
+          history.replaceState(currentState, "", window.location.href)
+        }
+
+        delete meta.scroll // Only store the scroll in the redirect case.
         history[kind + "State"](meta, "", to || null) // IE will coerce undefined to string
         let hashEl = this.getHashTargetEl(window.location.hash)
 
@@ -1008,9 +1035,10 @@ export let Browser = {
 
   localKey(namespace, subkey){ return `${namespace}-${subkey}` },
 
-  getHashTargetEl(hash){
-    if(hash.toString() === ""){ return }
-    return document.getElementById(hash) || document.querySelector(`a[name="${hash.substring(1)}"]`)
+  getHashTargetEl(maybeHash) {
+    let hash = maybeHash.toString().substring(1)
+    if(hash === ""){ return }
+    return document.getElementById(hash) || document.querySelector(`a[name="${hash}"]`)
   }
 }
 
@@ -1277,26 +1305,27 @@ export let DOM = {
   }
 }
 
-class DOMAppendPrependUpdate {
-  constructor(fromEl, toEl, updateType) {
-    let idsAfter = Array.from(toEl.children).map(child => child.id)
-    let idsBefore = []
+class DOMPostMorphRestorer {
+  constructor(containerBefore, containerAfter, updateType) {
+    let idsBefore = new Set()
+    let idsAfter = new Set([...containerAfter.children].map(child => child.id))
 
-    let modifiedIds = []
+    let elementsToModify = []
 
-    fromEl.childNodes.forEach(child => {
+    Array.from(containerBefore.children).forEach(child => {
       if (child.id) { // all of our children should be elements with ids
-        idsBefore.push(child.id)
-        if (idsAfter.indexOf(child.id) >= 0) {
-          modifiedIds.push([child.id, child.previousElementSibling && child.previousElementSibling.id])
+        idsBefore.add(child.id)
+        if (idsAfter.has(child.id)) {
+          let previousElementId = child.previousElementSibling && child.previousElementSibling.id
+          elementsToModify.push({elementId: child.id, previousElementId: previousElementId})
         }
       }
     })
 
-    this.containerID = toEl.id
+    this.containerId = containerAfter.id
     this.updateType = updateType
-    this.modifiedIds = modifiedIds
-    this.newIds = idsAfter.filter(id => idsBefore.indexOf(id) < 0)
+    this.elementsToModify = elementsToModify
+    this.elementIdsToAdd = [...idsAfter].filter(id => !idsBefore.has(id))
   }
 
   // We do the following to optimize append/prepend operations:
@@ -1306,31 +1335,31 @@ class DOMAppendPrependUpdate {
   //   3) New elements are going to be put in the right place by morphdom during append.
   //      For prepend, we move them to the first position in the container
   perform() {
-    let el = DOM.byId(this.containerID)
-    this.modifiedIds.forEach(([id, siblingId]) => {
-      if (siblingId) {
-        maybe(document.getElementById(siblingId), sibling => {
-          maybe(document.getElementById(id), child => {
-            let isInRightPlace = child.previousElementSibling && child.previousElementSibling.id == sibling.id
+    let container = DOM.byId(this.containerId)
+    this.elementsToModify.forEach(elementToModify => {
+      if (elementToModify.previousElementId) {
+        maybe(document.getElementById(elementToModify.previousElementId), previousElem => {
+          maybe(document.getElementById(elementToModify.elementId), elem => {
+            let isInRightPlace = elem.previousElementSibling && elem.previousElementSibling.id == previousElem.id
             if (!isInRightPlace) {
-              sibling.insertAdjacentElement("afterend", child)
+              previousElem.insertAdjacentElement("afterend", elem)
             }
           })
         })
       } else {
         // This is the first element in the container
-        maybe(document.getElementById(id), child => {
-          let isInRightPlace = child.previousElementSibling == null
+        maybe(document.getElementById(elementToModify.elementId), elem => {
+          let isInRightPlace = elem.previousElementSibling == null
           if (!isInRightPlace) {
-            el.insertAdjacentElement("afterbegin", child)
+            container.insertAdjacentElement("afterbegin", elem)
           }
         })
       }
     })
 
     if(this.updateType == "prepend"){
-      this.newIds.reverse().forEach(id => {
-        maybe(document.getElementById(id), child => el.insertAdjacentElement("afterbegin", child))
+      this.elementIdsToAdd.reverse().forEach(elemId => {
+        maybe(document.getElementById(elemId), elem => container.insertAdjacentElement("afterbegin", elem))
       })
     }
   }
@@ -1395,6 +1424,7 @@ class DOMPatch {
     let added = []
     let updates = []
     let appendPrependUpdates = []
+    let externalFormTriggered = null
 
     let diffHTML = liveSocket.time("premorph container prep", () => {
       return this.buildDiffHTML(container, html, phxUpdate, targetContainer)
@@ -1413,7 +1443,9 @@ class DOMPatch {
           return el
         },
         onNodeAdded: (el) => {
-          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){ el.submit() }
+          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){
+            externalFormTriggered = el
+          }
           // nested view handling
           if(DOM.isPhxChild(el) && view.ownsElement(el)){
             this.trackAfter("phxChildAdded", el)
@@ -1433,7 +1465,9 @@ class DOMPatch {
           return true
         },
         onElUpdated: (el) => {
-          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){ el.submit() }
+          if(DOM.isNowTriggerFormExternal(el, phxTriggerExternal)){
+            externalFormTriggered = el
+          }
           updates.push(el)
         },
         onBeforeElUpdated: (fromEl, toEl) => {
@@ -1470,7 +1504,7 @@ class DOMPatch {
             return false
           } else {
             if(DOM.isPhxUpdate(toEl, phxUpdate, ["append", "prepend"])){
-              appendPrependUpdates.push(new DOMAppendPrependUpdate(fromEl, toEl, toEl.getAttribute(phxUpdate)))
+              appendPrependUpdates.push(new DOMPostMorphRestorer(fromEl, toEl, toEl.getAttribute(phxUpdate)))
             }
             DOM.syncAttrsToProps(toEl)
             this.trackBefore("updated", fromEl, toEl)
@@ -1493,6 +1527,10 @@ class DOMPatch {
     added.forEach(el => this.trackAfter("added", el))
     updates.forEach(el => this.trackAfter("updated", el))
 
+    if(externalFormTriggered){
+      liveSocket.disconnect()
+      externalFormTriggered.submit()
+    }
     return true
   }
 
